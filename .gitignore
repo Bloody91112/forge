@@ -1,0 +1,16 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Binaries
+/forge
+/bin/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
