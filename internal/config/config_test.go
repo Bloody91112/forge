@@ -10,6 +10,7 @@ func TestLoad_LoadsWithDefaultEnvParams(t *testing.T) {
 	dbPass := "pass"
 	t.Setenv("DB_HOST", "")
 	t.Setenv("DB_PORT", "")
+	t.Setenv("HTTP_ADDR", "")
 	t.Setenv("DB_DATABASE", dbName)
 	t.Setenv("DB_USERNAME", dbUser)
 	t.Setenv("DB_PASSWORD", dbPass)
@@ -22,6 +23,10 @@ func TestLoad_LoadsWithDefaultEnvParams(t *testing.T) {
 
 	if conf.DBHost != DefaultDBHost {
 		t.Errorf("default db host was not used, expected: %s, got %s", DefaultDBHost, conf.DBHost)
+	}
+
+	if conf.HTTPAddr != DefaultHTTPAddr {
+		t.Errorf("default http address was not used, expected: %s, got %s", DefaultHTTPAddr, conf.HTTPAddr)
 	}
 
 	if conf.DBPort != 5432 {
@@ -76,7 +81,8 @@ func TestLoad_ThrowsErrOnRequiredParams(t *testing.T) {
 
 func setTestingEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("DB_HOST", "127.0.0.0")
+	t.Setenv("HTTP_ADDR", "localhost:8080")
+	t.Setenv("DB_HOST", "127.0.0.1")
 	t.Setenv("DB_PORT", "5432")
 	t.Setenv("DB_DATABASE", "forge")
 	t.Setenv("DB_USERNAME", "user")

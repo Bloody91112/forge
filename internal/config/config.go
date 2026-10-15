@@ -9,6 +9,7 @@ import (
 
 const DefaultDBHost string = "127.0.0.1"
 const DefaultDBPort string = "5432"
+const DefaultHTTPAddr string = ":8080"
 
 type Config struct {
 	DBHost     string
@@ -16,11 +17,13 @@ type Config struct {
 	DBUser     string
 	DBPassword string
 	DBName     string
+	HTTPAddr   string
 }
 
 func Load() (Config, error) {
 	dbHost := getEnv("DB_HOST", DefaultDBHost)
 	dbPortStr := getEnv("DB_PORT", DefaultDBPort)
+	httpAddr := getEnv("HTTP_ADDR", DefaultHTTPAddr)
 
 	dbPort, err := strconv.Atoi(dbPortStr)
 	if err != nil {
@@ -52,6 +55,7 @@ func Load() (Config, error) {
 		DBUser:     dbUser,
 		DBPassword: dbPass,
 		DBName:     dbName,
+		HTTPAddr:   httpAddr,
 	}, nil
 
 }
