@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"forge/internal/config"
 	"net"
 	"net/url"
@@ -21,7 +22,7 @@ func Open(ctx context.Context, conf config.Config) (*pgxpool.Pool, error) {
 
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create postgres pool, %w", err)
 	}
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -29,7 +30,7 @@ func Open(ctx context.Context, conf config.Config) (*pgxpool.Pool, error) {
 
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
-		return nil, err
+		return nil, fmt.Errorf("ping postgres, %w", err)
 	}
 
 	return pool, nil

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"forge/internal/config"
 	"forge/internal/database"
 	"log"
@@ -32,8 +31,6 @@ func run() error {
 		return err
 	}
 	defer dbPool.Close()
-
-	fmt.Println("Forge starting...")
 
 	return nil
 }
