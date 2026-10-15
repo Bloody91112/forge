@@ -25,7 +25,7 @@ func TestLoad_LoadsWithDefaultEnvParams(t *testing.T) {
 	}
 
 	if conf.DBPort != 5432 {
-		t.Errorf("default db host was not used, expected: %d, got %d", 5432, conf.DBPort)
+		t.Errorf("default db port was not used, expected: %d, got %d", 5432, conf.DBPort)
 	}
 
 	if dbName != conf.DBName {
@@ -62,10 +62,9 @@ func TestLoad_ThrowsErrOnRequiredParams(t *testing.T) {
 		{"required env db pass", "DB_PASSWORD"},
 	}
 
-	setTestingEnv(t)
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			setTestingEnv(t)
 			t.Setenv(tt.env, "")
 			_, err := Load()
 			if err == nil {

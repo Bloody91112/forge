@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"forge/internal/config"
+	"forge/internal/database"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -20,9 +24,16 @@ func run() error {
 		return err
 	}
 
-	fmt.Println("Forge starting...")
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
 
-	_ = conf
+	dbPool, err := database.Open(ctx, conf)
+	if err != nil {
+		return err
+	}
+	defer dbPool.Close()
+
+	fmt.Println("Forge starting...")
 
 	return nil
 }
