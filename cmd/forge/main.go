@@ -68,7 +68,7 @@ func run() error {
 	select {
 	case <-mainCtx.Done():
 	case err := <-serverErr:
-		if errors.Is(err, http.ErrServerClosed) {
+		if !errors.Is(err, http.ErrServerClosed) {
 			runErr = fmt.Errorf("http server stopped: %w", err)
 		}
 	}
@@ -78,25 +78,12 @@ func run() error {
 	sdCtx, sdCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer sdCancel()
 
-	serverSdDone := make(chan struct{})
+	if err := server.Shutdown(sdCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
 
-	go func() {
-		defer close(serverSdDone)
-
-		if err := server.Shutdown(sdCtx); err != nil {
-			log.Printf("failed to shutdown server: %v", err)
-			if closeErr := server.Close(); closeErr != nil {
-				log.Printf("failed to force-close server: %v", closeErr)
-			}
-		} else {
-			log.Printf("server stopped gracefully")
+		if closeErr := server.Close(); closeErr != nil {
+			log.Printf("force close failed: %v", closeErr)
 		}
-	}()
-
-	select {
-	case <-serverSdDone:
-	case <-sdCtx.Done():
-		log.Printf("timed out waiting for server shutdown")
 	}
 
 	return runErr
