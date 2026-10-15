@@ -1,7 +1,28 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"forge/internal/config"
+	"log"
+	"os"
+)
 
 func main() {
-	fmt.Println("Forge starting")
+	if err := run(); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	conf, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Forge starting...")
+
+	_ = conf
+
+	return nil
 }
