@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"testing"
 )
 
@@ -44,6 +45,39 @@ func TestLoad_LoadsWithDefaultEnvParams(t *testing.T) {
 	if dbPass != conf.DBPassword {
 		t.Errorf("unexpected db pass, expected %s, got: %s", dbPass, conf.DBPassword)
 	}
+}
+
+func TestLoad_UsesEnvValuesInsteadDefaults(t *testing.T) {
+	setTestingEnv(t)
+
+	httpAddr := "google.com"
+	DbHost := "db.host.com"
+	DbPort := 4323
+
+	DbPortStr := strconv.Itoa(DbPort)
+
+	t.Setenv("HTTP_ADDR", httpAddr)
+	t.Setenv("DB_HOST", DbHost)
+	t.Setenv("DB_PORT", DbPortStr)
+
+	conf, err := Load()
+
+	if err != nil {
+		t.Fatalf("load config err: %v", err)
+	}
+
+	if conf.DBHost != DbHost {
+		t.Errorf("default db host was not used, expected: %s, got %s", DbHost, conf.DBHost)
+	}
+
+	if conf.HTTPAddr != httpAddr {
+		t.Errorf("default http address was not used, expected: %s, got %s", httpAddr, conf.HTTPAddr)
+	}
+
+	if conf.DBPort != DbPort {
+		t.Errorf("default db port was not used, expected: %d, got %d", DbPort, conf.DBPort)
+	}
+
 }
 
 func TestLoad_ThrowsErrOnInvalidPort(t *testing.T) {
