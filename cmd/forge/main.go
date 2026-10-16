@@ -41,12 +41,12 @@ func run() error {
 	}
 	defer dbPool.Close()
 
-	healthinessHandler := handler.HealthinessHandler{}
-	readinessHandler := handler.NewReadinessHandler(dbPool)
+	health := handler.HealthHandler{}
+	readiness := handler.NewReadinessHandler(dbPool)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthinessHandler.Check)
-	mux.HandleFunc("GET /readyz", readinessHandler.Check)
+	mux.HandleFunc("GET /healthz", health.Check)
+	mux.HandleFunc("GET /readyz", readiness.Check)
 
 	server := &http.Server{
 		Addr:              conf.HTTPAddr,
@@ -73,12 +73,12 @@ func run() error {
 		}
 	}
 
-	readinessHandler.SetNotReady()
+	readiness.SetNotReady()
 
-	sdCtx, sdCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer sdCancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
 
-	if err := server.Shutdown(sdCtx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 
 		if closeErr := server.Close(); closeErr != nil {

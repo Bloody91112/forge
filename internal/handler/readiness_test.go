@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-type DBPinglerStub struct {
+type fakePinger struct {
 	Result error
 }
 
-func (db *DBPinglerStub) Ping(ctx context.Context) error {
+func (db *fakePinger) Ping(ctx context.Context) error {
 	return db.Result
 }
 
@@ -21,7 +21,7 @@ func TestReadinessHandler_CheckWhenReady(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 
-	pingler := DBPinglerStub{}
+	pingler := fakePinger{}
 	handler := NewReadinessHandler(&pingler)
 
 	mux := http.NewServeMux()
@@ -38,7 +38,7 @@ func TestReadinessHandler_CheckWhenNotReady(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 
-	pingler := DBPinglerStub{errors.New("db down")}
+	pingler := fakePinger{errors.New("db down")}
 	handler := NewReadinessHandler(&pingler)
 
 	mux := http.NewServeMux()
@@ -54,7 +54,7 @@ func TestReadinessHandler_SetNotReady(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 
-	pingler := DBPinglerStub{}
+	pingler := fakePinger{}
 	handler := NewReadinessHandler(&pingler)
 	handler.SetNotReady()
 

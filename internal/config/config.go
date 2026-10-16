@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-const DefaultDBHost string = "127.0.0.1"
-const DefaultDBPort string = "5432"
-const DefaultHTTPAddr string = ":8080"
+const DefaultDBHost = "127.0.0.1"
+const DefaultDBPort = "5432"
+const DefaultHTTPAddr = ":8080"
 
 type Config struct {
 	DBHost     string

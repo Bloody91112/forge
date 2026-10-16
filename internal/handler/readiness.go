@@ -7,17 +7,17 @@ import (
 	"time"
 )
 
-type PingableDb interface {
+type Pingler interface {
 	Ping(context context.Context) error
 }
 
 type ReadinessHandler struct {
-	DB           PingableDb
+	db           Pingler
 	shuttingDown atomic.Bool
 }
 
-func NewReadinessHandler(DB PingableDb) *ReadinessHandler {
-	return &ReadinessHandler{DB: DB}
+func NewReadinessHandler(db Pingler) *ReadinessHandler {
+	return &ReadinessHandler{db: db}
 }
 
 func (h *ReadinessHandler) Check(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +29,7 @@ func (h *ReadinessHandler) Check(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	if err := h.DB.Ping(ctx); err != nil {
+	if err := h.db.Ping(ctx); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
