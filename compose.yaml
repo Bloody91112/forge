@@ -13,7 +13,7 @@ services:
       - postgres_data:/var/lib/postgresql
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -31,6 +31,21 @@ services:
     command: [
       "-path", "/migrations",
       "-database", "postgres://${DB_USERNAME}:${DB_PASSWORD}@postgres:5432/${DB_DATABASE}?sslmode=disable",
+      "up"
+    ]
+
+  migrate-test:
+    image: migrate/migrate:v4.19.1
+    profiles:
+      - manual
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations:ro
+    command: [
+      "-path", "/migrations",
+      "-database", "postgres://${DB_USERNAME}:${DB_PASSWORD}@postgres:5432/${DB_TEST_DATABASE}?sslmode=disable",
       "up"
     ]
 

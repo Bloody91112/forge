@@ -124,7 +124,7 @@ func TestTaskRepository_CreateOrGetByIdempotencyKey(t *testing.T) {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
 	}
 
-	assertJSONEqual(t, expected.Payload, actual.Payload)
+	assertJSONEqual(t, otherClientTaskWithSameKey.Payload, otherResult.Payload)
 
 }
 
@@ -264,6 +264,10 @@ func getTestDb(t *testing.T, cleanBeforeTest bool) (*pgxpool.Pool, error) {
 	testDbName := os.Getenv("DB_TEST_DATABASE")
 	if testDbName == "" {
 		return nil, errors.New("env DB_TEST_DATABASE not specified")
+	}
+
+	if dbName == "" {
+		return nil, errors.New("env DB_DATABASE not specified")
 	}
 
 	if dbName == testDbName {
