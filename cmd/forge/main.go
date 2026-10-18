@@ -54,7 +54,7 @@ func run() error {
 	mux.HandleFunc("GET /healthz", health.Check)
 	mux.HandleFunc("GET /readyz", readiness.Check)
 	mux.HandleFunc("POST /api/v1/tasks", taskHandler.CreateTask)
-	mux.HandleFunc("POST /api/v1/tasks/{id}", taskHandler.GetTask)
+	mux.HandleFunc("GET /api/v1/tasks/{id}", taskHandler.GetTask)
 
 	server := &http.Server{
 		Addr:              conf.HTTPAddr,
