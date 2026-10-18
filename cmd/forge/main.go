@@ -7,6 +7,8 @@ import (
 	"forge/internal/config"
 	"forge/internal/database"
 	"forge/internal/handler"
+	"forge/internal/postgres"
+	"forge/internal/task"
 	"log"
 	"net/http"
 	"os"
@@ -44,9 +46,15 @@ func run() error {
 	health := handler.HealthHandler{}
 	readiness := handler.NewReadinessHandler(dbPool)
 
+	taskRepo := postgres.NewTaskRepository(dbPool)
+	taskService := task.NewService(taskRepo)
+	taskHandler := handler.NewTaskHandler(taskService)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Check)
 	mux.HandleFunc("GET /readyz", readiness.Check)
+	mux.HandleFunc("POST /api/v1/tasks", taskHandler.CreateTask)
+	mux.HandleFunc("POST /api/v1/tasks/{id}", taskHandler.GetTask)
 
 	server := &http.Server{
 		Addr:              conf.HTTPAddr,

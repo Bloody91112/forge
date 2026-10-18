@@ -5,9 +5,9 @@ import (
 )
 
 type CreateTaskInput struct {
-	Type           string
-	Payload        json.RawMessage
-	TimeoutSeconds *int64
-	MaxAttempts    *int64
-	IdempotencyKey string
+	Type           string          `json:"type"`
+	Payload        json.RawMessage `json:"payload"`
+	TimeoutSeconds *int64          `json:"timeout_seconds"`
+	MaxAttempts    *int64          `json:"max_attempts"`
+	IdempotencyKey string          `json:"idempotency_key"`
 }
