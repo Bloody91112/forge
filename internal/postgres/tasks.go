@@ -43,7 +43,13 @@ func (r *TaskRepository) GetByID(ctx context.Context, id uuid.UUID) (task.Task, 
 		WHERE id = $1
 	`
 
-	return scanTask(r.db.QueryRow(ctx, selectQuery, id))
+	gotTask, err := scanTask(r.db.QueryRow(ctx, selectQuery, id))
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return task.Task{}, task.ErrTaskNotFound
+	}
+
+	return gotTask, err
 }
 
 func (r *TaskRepository) CreateOrGetByIdempotencyKey(ctx context.Context, t task.Task) (task.Task, bool, error) {

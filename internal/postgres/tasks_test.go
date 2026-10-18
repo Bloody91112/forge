@@ -19,7 +19,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
@@ -177,8 +176,8 @@ func TestTaskRepository_GetByID(t *testing.T) {
 
 	_, err = repo.GetByID(t.Context(), unknownTaskID)
 
-	if !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("unexpected err, expected err: %v, got: %v", pgx.ErrNoRows, err)
+	if !errors.Is(err, task.ErrTaskNotFound) {
+		t.Fatalf("unexpected err, expected err: %v, got: %v", task.ErrTaskNotFound, err)
 	}
 
 }

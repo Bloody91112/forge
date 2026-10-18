@@ -102,9 +102,15 @@ func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error)
 	return createdTask, nil
 }
 
-//func (s *Service) GetByID(ctx context.Context, id uuid.UUID) error {
-//
-//}
+func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Task, error) {
+	task, err := s.repo.GetByID(ctx, id)
+
+	if err != nil {
+		return Task{}, fmt.Errorf("get task: %w", err)
+	}
+
+	return task, nil
+}
 
 func calculateRequestHash(
 	payload json.RawMessage,
