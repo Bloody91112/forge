@@ -36,6 +36,10 @@ func NewService(repo Repository) *Service {
 	return &Service{repo: repo}
 }
 
+func WithClientId(ctx context.Context, id uuid.UUID) context.Context {
+	return context.WithValue(ctx, clientIDKey, id)
+}
+
 func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error) {
 	var maxAttempts int64 = DefaultTaskMaxAttempts
 	if dto.MaxAttempts != nil {

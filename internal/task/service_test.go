@@ -81,7 +81,7 @@ func TestService_Create(t *testing.T) {
 		t.Fatalf("failed to make request hash: %v", err)
 	}
 
-	ctx := context.WithValue(t.Context(), clientIDKey, clientID)
+	ctx := WithClientId(t.Context(), clientID)
 
 	createTaskDTO := CreateTaskInput{
 		Type:           taskType,
@@ -152,7 +152,7 @@ func TestService_CreateWithDefaultFields(t *testing.T) {
 		t.Fatalf("failed to make request hash: %v", err)
 	}
 
-	ctx := context.WithValue(t.Context(), clientIDKey, clientID)
+	ctx := WithClientId(t.Context(), clientID)
 
 	createTaskDTO := CreateTaskInput{
 		Type:           taskType,
@@ -204,7 +204,7 @@ func TestService_CreateWithConflictHash(t *testing.T) {
 		t.Fatalf("failed to make request hash: %v", err)
 	}
 
-	ctx := context.WithValue(t.Context(), clientIDKey, clientID)
+	ctx := WithClientId(t.Context(), clientID)
 
 	// input task timeout changed, hash conflict
 	otherTaskTimeout := int64(21)
