@@ -40,6 +40,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 	}
 
 	wantTaskResponse := newCreateTaskResponse(wantTask)
+	idempotencyKey := "123"
 
 	tests := []struct {
 		name         string
@@ -55,7 +56,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			name: "not json content type provided response",
 			headers: map[string]string{
 				"Content-type":    "text",
-				"Idempotency-Key": "123",
+				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			wantHttpCode: http.StatusBadRequest,
@@ -74,7 +75,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			name: "not valid json payload error response",
 			headers: map[string]string{
 				"Content-type":    "application/json",
-				"Idempotency-Key": "123",
+				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"},}`,
 			wantHttpCode: http.StatusBadRequest,
@@ -84,7 +85,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			name: "second json payload error response",
 			headers: map[string]string{
 				"Content-type":    "application/json",
-				"Idempotency-Key": "123",
+				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"} {}}`,
 			wantHttpCode: http.StatusBadRequest,
@@ -94,7 +95,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			name: "failed payload param check in service response",
 			headers: map[string]string{
 				"Content-type":    "application/json",
-				"Idempotency-Key": "123",
+				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceErr:   task.ErrInvalidInput,
@@ -105,7 +106,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			name: "no client id error response",
 			headers: map[string]string{
 				"Content-type":    "application/json",
-				"Idempotency-Key": "123",
+				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceErr:   task.ErrMissingClientID,
@@ -116,7 +117,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			name: "idempotency conflict error response",
 			headers: map[string]string{
 				"Content-type":    "application/json",
-				"Idempotency-Key": "123",
+				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceErr:   task.ErrIdempotencyConflict,
@@ -127,7 +128,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			name: "unknown error response",
 			headers: map[string]string{
 				"Content-type":    "application/json",
-				"Idempotency-Key": "123",
+				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceErr:   errors.New("something went wrong"),
@@ -138,7 +139,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			name: "happy path response",
 			headers: map[string]string{
 				"Content-type":    "application/json",
-				"Idempotency-Key": "123",
+				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceTask:  wantTask,
@@ -184,8 +185,8 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			}
 
 			if tt.wantResponse != (CreateTaskResponse{}) {
-				if service.createInput.IdempotencyKey != "123" {
-					t.Errorf("expected service idempotency key: %q, got: %q", "123", service.createInput.IdempotencyKey)
+				if service.createInput.IdempotencyKey != idempotencyKey {
+					t.Errorf("expected service idempotency key: %q, got: %q", idempotencyKey, service.createInput.IdempotencyKey)
 				}
 
 				var taskResponse CreateTaskResponse
