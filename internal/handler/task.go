@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"forge/internal/task"
@@ -13,10 +14,15 @@ import (
 )
 
 type TaskHandler struct {
-	service *task.Service
+	service TaskService
 }
 
-func NewTaskHandler(service *task.Service) *TaskHandler {
+type TaskService interface {
+	Create(ctx context.Context, dto task.CreateTaskInput) (task.Task, error)
+	GetByID(ctx context.Context, id uuid.UUID) (task.Task, error)
+}
+
+func NewTaskHandler(service TaskService) *TaskHandler {
 	return &TaskHandler{service: service}
 }
 
@@ -125,20 +131,17 @@ func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func responseError(w http.ResponseWriter, status int, errCode, errMessage string) {
-	errorObject := struct {
-		Error struct {
+	errObject := ErrorResponse{
+		Error: struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
-		} `json:"error"`
-	}{}
-
-	errorObject.Error.Code = errCode
-	errorObject.Error.Message = errMessage
+		}{Code: errCode, Message: errMessage},
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
-	if err := json.NewEncoder(w).Encode(errorObject); err != nil {
+	if err := json.NewEncoder(w).Encode(errObject); err != nil {
 		log.Printf("failed to encode error response: %v", err)
 	}
 }
