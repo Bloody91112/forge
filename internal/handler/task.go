@@ -30,18 +30,18 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 
 	if err != nil {
-		responseError(w, http.StatusBadRequest, "media_type_parse_error", "Failed to parse media type")
+		responseError(w, http.StatusBadRequest, errCodeMediaTypeParseError, "Failed to parse media type")
 		return
 	}
 
 	if mediaType != "application/json" {
-		responseError(w, http.StatusBadRequest, "media_type_error", "JSON content-type required")
+		responseError(w, http.StatusBadRequest, errCodeMediaTypeError, "JSON content-type required")
 		return
 	}
 
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if idempotencyKey == "" {
-		responseError(w, http.StatusBadRequest, "idempotency_key_error", "Idempotency-Key header not provided")
+		responseError(w, http.StatusBadRequest, errCodeIdempotencyKeyError, "Idempotency-Key header not provided")
 		return
 	}
 
@@ -53,17 +53,17 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	if err := decoder.Decode(&taskInput); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			responseError(w, http.StatusRequestEntityTooLarge, "request_body_limit_error", "Request body too large. Limit is 1MB")
+			responseError(w, http.StatusRequestEntityTooLarge, errCodeRequestBodyLimit, "Request body too large. Limit is 1MB")
 			return
 		}
 
-		responseError(w, http.StatusBadRequest, "invalid_json_payload", "Invalid JSON payload")
+		responseError(w, http.StatusBadRequest, errCodeInvalidJSONPayload, "Invalid JSON payload")
 		return
 	}
 
 	// check and reject additional json objects
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		responseError(w, http.StatusBadRequest, "invalid_json_payload", "Invalid JSON payload: expected a single JSON value")
+		responseError(w, http.StatusBadRequest, errCodeInvalidJSONPayload, "Invalid JSON payload: expected a single JSON value")
 		return
 	}
 
@@ -71,24 +71,24 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	createdTask, err := h.service.Create(r.Context(), taskInput)
 
 	if errors.Is(err, task.ErrInvalidInput) {
-		responseError(w, http.StatusBadRequest, "invalid_payload_params", "Invalid payload params")
+		responseError(w, http.StatusBadRequest, errCodeInvalidPayload, "Invalid payload params")
 		return
 	}
 
 	if errors.Is(err, task.ErrMissingClientID) {
 		log.Printf("no client id provided, err: %v", err)
-		responseError(w, http.StatusInternalServerError, "create_task_error", "Failed to create task")
+		responseError(w, http.StatusInternalServerError, errCodeCreateTaskFailed, "Failed to create task")
 		return
 	}
 
 	if errors.Is(err, task.ErrIdempotencyConflict) {
-		responseError(w, http.StatusConflict, "idempotency_key_conflict", "Idempotency key conflict")
+		responseError(w, http.StatusConflict, errCodeIdempotencyConflict, "Idempotency key conflict")
 		return
 	}
 
 	if err != nil {
 		log.Printf("create task unknown err: %v", err)
-		responseError(w, http.StatusInternalServerError, "create_task_error", "Failed to create task")
+		responseError(w, http.StatusInternalServerError, errCodeCreateTaskFailed, "Failed to create task")
 		return
 	}
 
@@ -105,20 +105,20 @@ func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 
 	if err != nil {
-		responseError(w, http.StatusBadRequest, "invalid_task_id", "Invalid task id")
+		responseError(w, http.StatusBadRequest, errCodeInvalidTaskID, "Invalid task id")
 		return
 	}
 
 	gotTask, err := h.service.GetByID(r.Context(), id)
 
 	if errors.Is(err, task.ErrTaskNotFound) {
-		responseError(w, http.StatusNotFound, "task_not_found", "Task not found")
+		responseError(w, http.StatusNotFound, errCodeTaskNotFound, "Task not found")
 		return
 	}
 
 	if err != nil {
 		log.Printf("failed to get task: %v", err)
-		responseError(w, http.StatusInternalServerError, "get_task_failed", "Get task failed")
+		responseError(w, http.StatusInternalServerError, errCodeGetTaskFailed, "Get task failed")
 		return
 	}
 
