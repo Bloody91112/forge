@@ -345,6 +345,10 @@ func TestTaskHandler_GetTask(t *testing.T) {
 				}
 			}
 
+			if responseContentType := rr.Header().Get("Content-Type"); responseContentType != "application/json" {
+				t.Errorf("expected json response content type, got: %s", responseContentType)
+			}
+
 		})
 	}
 }
