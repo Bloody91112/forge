@@ -241,8 +241,8 @@ func TestTaskHandler_CreateTask_TooLargeRequestBody(t *testing.T) {
 		t.Fatalf("failed to decode err: %v", err)
 	}
 
-	if responseErr.Error.Code != "request_body_limit_error" {
-		t.Fatalf("expected error code: %s, got: %s", "request_body_limit_error", responseErr.Error.Code)
+	if responseErr.Error.Code != errCodeRequestBodyLimit {
+		t.Fatalf("expected error code: %s, got: %s", errCodeRequestBodyLimit, responseErr.Error.Code)
 	}
 
 }
