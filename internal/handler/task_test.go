@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"forge/internal/httpresponse"
 	"forge/internal/task"
 	"net/http"
 	"net/http/httptest"
@@ -60,7 +61,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			wantHttpCode: http.StatusBadRequest,
-			wantErrCode:  errCodeMediaTypeError,
+			wantErrCode:  httpresponse.ErrCodeMediaTypeError,
 		},
 		{
 			name: "no idempotency key error response",
@@ -69,7 +70,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			wantHttpCode: http.StatusBadRequest,
-			wantErrCode:  errCodeIdempotencyKeyError,
+			wantErrCode:  httpresponse.ErrCodeIdempotencyKeyError,
 		},
 		{
 			name: "not valid json payload error response",
@@ -79,7 +80,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"},}`,
 			wantHttpCode: http.StatusBadRequest,
-			wantErrCode:  errCodeInvalidJSONPayload,
+			wantErrCode:  httpresponse.ErrCodeInvalidJSONPayload,
 		},
 		{
 			name: "second json payload error response",
@@ -89,7 +90,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"} {}}`,
 			wantHttpCode: http.StatusBadRequest,
-			wantErrCode:  errCodeInvalidJSONPayload,
+			wantErrCode:  httpresponse.ErrCodeInvalidJSONPayload,
 		},
 		{
 			name: "failed payload param check in service response",
@@ -100,7 +101,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceErr:   task.ErrInvalidInput,
 			wantHttpCode: http.StatusBadRequest,
-			wantErrCode:  errCodeInvalidPayload,
+			wantErrCode:  httpresponse.ErrCodeInvalidPayload,
 		},
 		{
 			name: "no client id error response",
@@ -111,7 +112,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceErr:   task.ErrMissingClientID,
 			wantHttpCode: http.StatusInternalServerError,
-			wantErrCode:  errCodeCreateTaskFailed,
+			wantErrCode:  httpresponse.ErrCodeCreateTaskFailed,
 		},
 		{
 			name: "idempotency conflict error response",
@@ -122,7 +123,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceErr:   task.ErrIdempotencyConflict,
 			wantHttpCode: http.StatusConflict,
-			wantErrCode:  errCodeIdempotencyConflict,
+			wantErrCode:  httpresponse.ErrCodeIdempotencyConflict,
 		},
 		{
 			name: "unknown error response",
@@ -133,7 +134,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
 			serviceErr:   errors.New("something went wrong"),
 			wantHttpCode: http.StatusInternalServerError,
-			wantErrCode:  errCodeCreateTaskFailed,
+			wantErrCode:  httpresponse.ErrCodeCreateTaskFailed,
 		},
 		{
 			name: "happy path response",
@@ -174,7 +175,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			}
 
 			if tt.wantErrCode != "" {
-				var responseErr ErrorResponse
+				var responseErr httpresponse.ErrorResponse
 				if err := json.NewDecoder(rr.Body).Decode(&responseErr); err != nil {
 					t.Fatalf("failed to decode err: %v", err)
 				}
@@ -236,13 +237,13 @@ func TestTaskHandler_CreateTask_TooLargeRequestBody(t *testing.T) {
 		t.Errorf("expected http code: %d, got: %d", http.StatusRequestEntityTooLarge, rr.Code)
 	}
 
-	var responseErr ErrorResponse
+	var responseErr httpresponse.ErrorResponse
 	if err := json.NewDecoder(rr.Body).Decode(&responseErr); err != nil {
 		t.Fatalf("failed to decode err: %v", err)
 	}
 
-	if responseErr.Error.Code != errCodeRequestBodyLimit {
-		t.Fatalf("expected error code: %s, got: %s", errCodeRequestBodyLimit, responseErr.Error.Code)
+	if responseErr.Error.Code != httpresponse.ErrCodeRequestBodyLimit {
+		t.Fatalf("expected error code: %s, got: %s", httpresponse.ErrCodeRequestBodyLimit, responseErr.Error.Code)
 	}
 
 }
@@ -272,7 +273,7 @@ func TestTaskHandler_GetTask(t *testing.T) {
 			name:         "invalid task id in path",
 			pathID:       "123",
 			wantHttpCode: http.StatusBadRequest,
-			wantErrCode:  errCodeInvalidTaskID,
+			wantErrCode:  httpresponse.ErrCodeInvalidTaskID,
 		},
 		{
 			name:         "happy path response",
@@ -286,14 +287,14 @@ func TestTaskHandler_GetTask(t *testing.T) {
 			pathID:       taskUuid.String(),
 			serviceErr:   task.ErrTaskNotFound,
 			wantHttpCode: http.StatusNotFound,
-			wantErrCode:  errCodeTaskNotFound,
+			wantErrCode:  httpresponse.ErrCodeTaskNotFound,
 		},
 		{
 			name:         "unknown error",
 			pathID:       taskUuid.String(),
 			serviceErr:   errors.New("something went wrong"),
 			wantHttpCode: http.StatusInternalServerError,
-			wantErrCode:  errCodeGetTaskFailed,
+			wantErrCode:  httpresponse.ErrCodeGetTaskFailed,
 		},
 	}
 
@@ -320,7 +321,7 @@ func TestTaskHandler_GetTask(t *testing.T) {
 			}
 
 			if tt.wantErrCode != "" {
-				var responseErr ErrorResponse
+				var responseErr httpresponse.ErrorResponse
 				if err := json.NewDecoder(rr.Body).Decode(&responseErr); err != nil {
 					t.Fatalf("failed to decode error response: %v", err)
 				}

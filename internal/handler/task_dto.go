@@ -33,13 +33,6 @@ type TaskErrorResponse struct {
 	Message *string `json:"message"`
 }
 
-type ErrorResponse struct {
-	Error struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
 func newCreateTaskResponse(t task.Task) CreateTaskResponse {
 	return CreateTaskResponse{
 		ID:        t.ID,

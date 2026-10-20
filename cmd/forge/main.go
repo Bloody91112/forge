@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"forge/internal/auth"
 	"forge/internal/config"
 	"forge/internal/database"
 	"forge/internal/handler"
+	"forge/internal/middleware"
 	"forge/internal/postgres"
 	"forge/internal/task"
 	"log"
@@ -50,6 +52,9 @@ func run() error {
 	taskService := task.NewService(taskRepo)
 	taskHandler := handler.NewTaskHandler(taskService)
 
+	clientRepository := postgres.NewClientRepository(dbPool)
+	authService := auth.NewService(clientRepository)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Check)
 	mux.HandleFunc("GET /readyz", readiness.Check)
@@ -58,7 +63,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              conf.HTTPAddr,
-		Handler:           mux,
+		Handler:           middleware.Auth(authService, mux),
 		ReadTimeout:       2 * time.Second,
 		ReadHeaderTimeout: 2 * time.Second,
 		WriteTimeout:      10 * time.Second,

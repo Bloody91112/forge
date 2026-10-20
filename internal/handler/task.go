@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"forge/internal/httpresponse"
 	"forge/internal/task"
 	"io"
 	"log"
@@ -30,18 +31,18 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 
 	if err != nil {
-		responseError(w, http.StatusBadRequest, errCodeMediaTypeParseError, "Failed to parse media type")
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeMediaTypeParseError, "Failed to parse media type")
 		return
 	}
 
 	if mediaType != "application/json" {
-		responseError(w, http.StatusBadRequest, errCodeMediaTypeError, "JSON content-type required")
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeMediaTypeError, "JSON content-type required")
 		return
 	}
 
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if idempotencyKey == "" {
-		responseError(w, http.StatusBadRequest, errCodeIdempotencyKeyError, "Idempotency-Key header not provided")
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeIdempotencyKeyError, "Idempotency-Key header not provided")
 		return
 	}
 
@@ -53,17 +54,17 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	if err := decoder.Decode(&taskInput); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			responseError(w, http.StatusRequestEntityTooLarge, errCodeRequestBodyLimit, "Request body too large. Limit is 1MB")
+			httpresponse.ResponseError(w, http.StatusRequestEntityTooLarge, httpresponse.ErrCodeRequestBodyLimit, "Request body too large. Limit is 1MB")
 			return
 		}
 
-		responseError(w, http.StatusBadRequest, errCodeInvalidJSONPayload, "Invalid JSON payload")
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidJSONPayload, "Invalid JSON payload")
 		return
 	}
 
 	// check and reject additional json objects
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		responseError(w, http.StatusBadRequest, errCodeInvalidJSONPayload, "Invalid JSON payload: expected a single JSON value")
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidJSONPayload, "Invalid JSON payload: expected a single JSON value")
 		return
 	}
 
@@ -71,24 +72,24 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	createdTask, err := h.service.Create(r.Context(), taskInput)
 
 	if errors.Is(err, task.ErrInvalidInput) {
-		responseError(w, http.StatusBadRequest, errCodeInvalidPayload, "Invalid payload params")
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
 		return
 	}
 
 	if errors.Is(err, task.ErrMissingClientID) {
 		log.Printf("no client id provided, err: %v", err)
-		responseError(w, http.StatusInternalServerError, errCodeCreateTaskFailed, "Failed to create task")
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeCreateTaskFailed, "Failed to create task")
 		return
 	}
 
 	if errors.Is(err, task.ErrIdempotencyConflict) {
-		responseError(w, http.StatusConflict, errCodeIdempotencyConflict, "Idempotency key conflict")
+		httpresponse.ResponseError(w, http.StatusConflict, httpresponse.ErrCodeIdempotencyConflict, "Idempotency key conflict")
 		return
 	}
 
 	if err != nil {
 		log.Printf("create task unknown err: %v", err)
-		responseError(w, http.StatusInternalServerError, errCodeCreateTaskFailed, "Failed to create task")
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeCreateTaskFailed, "Failed to create task")
 		return
 	}
 
@@ -105,20 +106,20 @@ func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 
 	if err != nil {
-		responseError(w, http.StatusBadRequest, errCodeInvalidTaskID, "Invalid task id")
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidTaskID, "Invalid task id")
 		return
 	}
 
 	gotTask, err := h.service.GetByID(r.Context(), id)
 
 	if errors.Is(err, task.ErrTaskNotFound) {
-		responseError(w, http.StatusNotFound, errCodeTaskNotFound, "Task not found")
+		httpresponse.ResponseError(w, http.StatusNotFound, httpresponse.ErrCodeTaskNotFound, "Task not found")
 		return
 	}
 
 	if err != nil {
 		log.Printf("failed to get task: %v", err)
-		responseError(w, http.StatusInternalServerError, errCodeGetTaskFailed, "Get task failed")
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeGetTaskFailed, "Get task failed")
 		return
 	}
 
@@ -127,21 +128,5 @@ func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(newGetTaskResponse(gotTask)); err != nil {
 		log.Printf("failed to encode task: %v", err)
 		return
-	}
-}
-
-func responseError(w http.ResponseWriter, status int, errCode, errMessage string) {
-	errObject := ErrorResponse{
-		Error: struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		}{Code: errCode, Message: errMessage},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-
-	if err := json.NewEncoder(w).Encode(errObject); err != nil {
-		log.Printf("failed to encode error response: %v", err)
 	}
 }
