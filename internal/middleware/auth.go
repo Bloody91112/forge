@@ -31,7 +31,7 @@ func Auth(authService *auth.Service, next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := task.WithClientId(r.Context(), clientID)
+		ctx := task.WithClientID(r.Context(), clientID)
 		r = r.WithContext(ctx)
 
 		next.ServeHTTP(w, r)

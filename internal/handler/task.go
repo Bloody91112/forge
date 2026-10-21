@@ -117,6 +117,12 @@ func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if errors.Is(err, task.ErrMissingClientID) {
+		log.Printf("no client id provided, err: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeGetTaskFailed, "Failed to get task")
+		return
+	}
+
 	if err != nil {
 		log.Printf("failed to get task: %v", err)
 		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeGetTaskFailed, "Get task failed")

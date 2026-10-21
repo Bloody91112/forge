@@ -39,7 +39,7 @@ func TestService_GetByID_TaskExists(t *testing.T) {
 	}
 
 	service := NewService(&repo)
-	ctx := WithClientId(t.Context(), clientID)
+	ctx := WithClientID(t.Context(), clientID)
 	task, err := service.GetByID(ctx, taskID)
 	if err != nil {
 		t.Fatalf("get user error: %v", err)
@@ -60,7 +60,7 @@ func TestService_GetByID_TaskNotFound(t *testing.T) {
 	}
 
 	service := NewService(&repo)
-	ctx := WithClientId(t.Context(), clientID)
+	ctx := WithClientID(t.Context(), clientID)
 
 	_, err := service.GetByID(ctx, notExistTaskID)
 
@@ -83,7 +83,7 @@ func TestService_Create(t *testing.T) {
 		t.Fatalf("failed to make request hash: %v", err)
 	}
 
-	ctx := WithClientId(t.Context(), clientID)
+	ctx := WithClientID(t.Context(), clientID)
 
 	createTaskDTO := CreateTaskInput{
 		Type:           taskType,
@@ -154,7 +154,7 @@ func TestService_CreateWithDefaultFields(t *testing.T) {
 		t.Fatalf("failed to make request hash: %v", err)
 	}
 
-	ctx := WithClientId(t.Context(), clientID)
+	ctx := WithClientID(t.Context(), clientID)
 
 	createTaskDTO := CreateTaskInput{
 		Type:           taskType,
@@ -206,7 +206,7 @@ func TestService_CreateWithConflictHash(t *testing.T) {
 		t.Fatalf("failed to make request hash: %v", err)
 	}
 
-	ctx := WithClientId(t.Context(), clientID)
+	ctx := WithClientID(t.Context(), clientID)
 
 	// input task timeout changed, hash conflict
 	otherTaskTimeout := int64(21)

@@ -36,7 +36,7 @@ func NewService(repo Repository) *Service {
 	return &Service{repo: repo}
 }
 
-func WithClientId(ctx context.Context, id uuid.UUID) context.Context {
+func WithClientID(ctx context.Context, id uuid.UUID) context.Context {
 	return context.WithValue(ctx, clientIDKey, id)
 }
 
