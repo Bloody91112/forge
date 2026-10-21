@@ -1,12 +1,25 @@
 package auth
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
-func TestExtractBearerToken(t *testing.T) {
+type ClientRepositoryStub struct {
+	clientID uuid.UUID
+	err      error
+}
+
+func (r *ClientRepositoryStub) GetClientIDByTokenHash(ctx context.Context, hash string) (uuid.UUID, error) {
+	return r.clientID, r.err
+}
+
+func TestService_ExtractBearerToken(t *testing.T) {
 	tests := []struct {
 		name      string
 		header    string
@@ -74,5 +87,65 @@ func TestExtractBearerToken(t *testing.T) {
 				t.Errorf("extractBearerToken() token = %q, want %q", gotToken, tt.wantToken)
 			}
 		})
+	}
+}
+
+func TestService_VerifyClientByToken(t *testing.T) {
+
+	clientID := uuid.New()
+	clientToken := uuid.New().String()
+
+	tests := []struct {
+		name       string
+		authHeader string
+		wantID     uuid.UUID
+		wantErr    error
+	}{
+		{
+			name:       "correct auth header",
+			authHeader: "Bearer " + clientToken,
+			wantID:     clientID,
+			wantErr:    nil,
+		},
+		{
+			name:       "bad auth header",
+			authHeader: "Bearer",
+			wantID:     uuid.Nil,
+			wantErr:    ErrInvalidAuthToken,
+		},
+		{
+			name:       "client not found",
+			authHeader: "Bearer " + clientToken,
+			wantID:     uuid.Nil,
+			wantErr:    ErrClientNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", tt.authHeader)
+
+			repo := ClientRepositoryStub{tt.wantID, tt.wantErr}
+			service := NewService(&repo)
+			id, serviceErr := service.VerifyClientByToken(req)
+
+			if !errors.Is(serviceErr, tt.wantErr) {
+				t.Fatalf("expected err: %v, got: %v", tt.wantErr, serviceErr)
+			}
+
+			if tt.wantID != id {
+				t.Fatalf("expected id: %s, got: %s", tt.wantID, id)
+			}
+		})
+	}
+}
+
+func TestService_MakeTokenHash(t *testing.T) {
+	token := uuid.New().String()
+	hash := makeTokenHash(token)
+
+	if hash == token {
+		t.Fatalf("token hash equals token: %s", token)
 	}
 }

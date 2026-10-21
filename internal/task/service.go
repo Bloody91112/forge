@@ -40,6 +40,14 @@ func WithClientId(ctx context.Context, id uuid.UUID) context.Context {
 	return context.WithValue(ctx, clientIDKey, id)
 }
 
+func ClientIDFromContext(ctx context.Context) (uuid.UUID, bool) {
+	id, ok := ctx.Value(clientIDKey).(uuid.UUID)
+	if !ok {
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
 func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error) {
 	var maxAttempts int64 = DefaultTaskMaxAttempts
 	if dto.MaxAttempts != nil {
