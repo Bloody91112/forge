@@ -25,22 +25,22 @@ func (r *TaskRepositoryStub) CreateOrGetByIdempotencyKey(ctx context.Context, ta
 	return task, r.created, r.err
 }
 
-func (r *TaskRepositoryStub) GetByID(ctx context.Context, id uuid.UUID) (Task, error) {
+func (r *TaskRepositoryStub) GetByID(ctx context.Context, taskID uuid.UUID, clientID uuid.UUID) (Task, error) {
 	return r.task, r.err
 }
 
 func TestService_GetByID_TaskExists(t *testing.T) {
 	taskID := uuid.New()
+	clientID := uuid.New()
 
 	repo := TaskRepositoryStub{
-		task: Task{
-			ID: taskID,
-		},
-		err: nil,
+		task: Task{ID: taskID},
+		err:  nil,
 	}
 
 	service := NewService(&repo)
-	task, err := service.GetByID(t.Context(), taskID)
+	ctx := WithClientId(t.Context(), clientID)
+	task, err := service.GetByID(ctx, taskID)
 	if err != nil {
 		t.Fatalf("get user error: %v", err)
 	}
@@ -53,14 +53,16 @@ func TestService_GetByID_TaskExists(t *testing.T) {
 
 func TestService_GetByID_TaskNotFound(t *testing.T) {
 	notExistTaskID := uuid.New()
+	clientID := uuid.New()
 
 	repo := TaskRepositoryStub{
 		err: ErrTaskNotFound,
 	}
 
 	service := NewService(&repo)
+	ctx := WithClientId(t.Context(), clientID)
 
-	_, err := service.GetByID(t.Context(), notExistTaskID)
+	_, err := service.GetByID(ctx, notExistTaskID)
 
 	if !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("expected err: %v, got: %v", ErrTaskNotFound, err)

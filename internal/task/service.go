@@ -25,7 +25,7 @@ const clientIDKey contextKey = "client_id"
 
 type Repository interface {
 	CreateOrGetByIdempotencyKey(ctx context.Context, task Task) (Task, bool, error)
-	GetByID(ctx context.Context, id uuid.UUID) (Task, error)
+	GetByID(ctx context.Context, taskID uuid.UUID, clientID uuid.UUID) (Task, error)
 }
 
 type Service struct {
@@ -84,7 +84,7 @@ func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error)
 		return Task{}, fmt.Errorf("calculate request hash: %w", err)
 	}
 
-	clientID, ok := ctx.Value(clientIDKey).(uuid.UUID)
+	clientID, ok := ClientIDFromContext(ctx)
 	if !ok {
 		return Task{}, ErrMissingClientID
 	}
@@ -114,8 +114,14 @@ func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error)
 	return createdTask, nil
 }
 
-func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Task, error) {
-	task, err := s.repo.GetByID(ctx, id)
+func (s *Service) GetByID(ctx context.Context, taskID uuid.UUID) (Task, error) {
+	clientID, ok := ClientIDFromContext(ctx)
+
+	if !ok {
+		return Task{}, ErrMissingClientID
+	}
+
+	task, err := s.repo.GetByID(ctx, taskID, clientID)
 
 	if err != nil {
 		return Task{}, fmt.Errorf("get task: %w", err)

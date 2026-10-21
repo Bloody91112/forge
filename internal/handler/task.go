@@ -20,7 +20,7 @@ type TaskHandler struct {
 
 type TaskService interface {
 	Create(ctx context.Context, dto task.CreateTaskInput) (task.Task, error)
-	GetByID(ctx context.Context, id uuid.UUID) (task.Task, error)
+	GetByID(ctx context.Context, taskID uuid.UUID) (task.Task, error)
 }
 
 func NewTaskHandler(service TaskService) *TaskHandler {

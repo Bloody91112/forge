@@ -160,7 +160,7 @@ func TestTaskRepository_GetByID(t *testing.T) {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
-	got, err := repo.GetByID(t.Context(), expected.ID)
+	got, err := repo.GetByID(t.Context(), expected.ID, clientId)
 
 	if err != nil {
 		t.Fatalf("failed to get task: %v", err)
@@ -174,7 +174,7 @@ func TestTaskRepository_GetByID(t *testing.T) {
 
 	unknownTaskID := uuid.New()
 
-	_, err = repo.GetByID(t.Context(), unknownTaskID)
+	_, err = repo.GetByID(t.Context(), unknownTaskID, clientId)
 
 	if !errors.Is(err, task.ErrTaskNotFound) {
 		t.Fatalf("unexpected err, expected err: %v, got: %v", task.ErrTaskNotFound, err)

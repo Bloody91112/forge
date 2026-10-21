@@ -23,7 +23,7 @@ type FakeTaskService struct {
 	createInput task.CreateTaskInput
 }
 
-func (s *FakeTaskService) GetByID(ctx context.Context, id uuid.UUID) (task.Task, error) {
+func (s *FakeTaskService) GetByID(ctx context.Context, taskID uuid.UUID) (task.Task, error) {
 	return s.task, s.err
 }
 

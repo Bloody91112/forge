@@ -19,7 +19,7 @@ func NewTaskRepository(db *pgxpool.Pool) *TaskRepository {
 	return &TaskRepository{db: db}
 }
 
-func (r *TaskRepository) GetByID(ctx context.Context, id uuid.UUID) (task.Task, error) {
+func (r *TaskRepository) GetByID(ctx context.Context, taskID uuid.UUID, clientID uuid.UUID) (task.Task, error) {
 	const selectQuery = `
 		SELECT
 			id,
@@ -40,10 +40,10 @@ func (r *TaskRepository) GetByID(ctx context.Context, id uuid.UUID) (task.Task, 
 			started_at,
 			finished_at
 		FROM tasks
-		WHERE id = $1
+		WHERE id = $1 AND client_id = $2
 	`
 
-	gotTask, err := scanTask(r.db.QueryRow(ctx, selectQuery, id))
+	gotTask, err := scanTask(r.db.QueryRow(ctx, selectQuery, taskID, clientID))
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return task.Task{}, task.ErrTaskNotFound
