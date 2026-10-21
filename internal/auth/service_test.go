@@ -148,4 +148,10 @@ func TestService_MakeTokenHash(t *testing.T) {
 	if hash == token {
 		t.Fatalf("token hash equals token: %s", token)
 	}
+
+	hashSecondCall := makeTokenHash(token)
+
+	if hash != hashSecondCall {
+		t.Fatalf("token hash changed after func second call, initial: %s, second: %s", hash, hashSecondCall)
+	}
 }

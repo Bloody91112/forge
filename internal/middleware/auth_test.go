@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"forge/internal/auth"
 	"forge/internal/httpresponse"
 	"forge/internal/task"
@@ -70,6 +71,14 @@ func TestAuth(t *testing.T) {
 			wantHttpCode: http.StatusUnauthorized,
 			wantErrCode:  httpresponse.ErrCodeNotAuthorized,
 		},
+		{
+			name:         "unknown repo error",
+			authHeader:   "Bearer 123",
+			path:         "/any",
+			repoErr:      errors.New("something went wrong (test)"),
+			wantHttpCode: http.StatusInternalServerError,
+			wantErrCode:  httpresponse.ErrCodeAuthFailed,
+		},
 	}
 
 	for _, tt := range tests {
@@ -101,6 +110,10 @@ func TestAuth(t *testing.T) {
 
 			if tt.wantHttpCode == http.StatusOK && !nextCalled {
 				t.Fatalf("next http handler was not called")
+			}
+
+			if tt.wantHttpCode == http.StatusUnauthorized && nextCalled {
+				t.Fatalf("next http handler unexpectedly was called")
 			}
 
 			if rr.Code != tt.wantHttpCode {
