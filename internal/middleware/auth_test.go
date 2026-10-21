@@ -112,7 +112,7 @@ func TestAuth(t *testing.T) {
 				t.Fatalf("next http handler was not called")
 			}
 
-			if tt.wantHttpCode == http.StatusUnauthorized && nextCalled {
+			if tt.wantErrCode != "" && nextCalled {
 				t.Fatalf("next http handler unexpectedly was called")
 			}
 
