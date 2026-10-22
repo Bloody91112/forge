@@ -11,10 +11,13 @@ import (
 )
 
 type TaskRepositoryStub struct {
-	task       Task
-	taskPassed bool
-	created    bool
-	err        error
+	task          Task
+	taskPassed    bool
+	created       bool
+	err           error
+	gotTaskID     uuid.UUID
+	gotClientID   uuid.UUID
+	getByIDCalled bool
 }
 
 func (r *TaskRepositoryStub) CreateOrGetByIdempotencyKey(ctx context.Context, task Task) (Task, bool, error) {
@@ -26,6 +29,10 @@ func (r *TaskRepositoryStub) CreateOrGetByIdempotencyKey(ctx context.Context, ta
 }
 
 func (r *TaskRepositoryStub) GetByID(ctx context.Context, taskID uuid.UUID, clientID uuid.UUID) (Task, error) {
+	r.getByIDCalled = true
+	r.gotTaskID = taskID
+	r.gotClientID = clientID
+
 	return r.task, r.err
 }
 
@@ -47,6 +54,18 @@ func TestService_GetByID_TaskExists(t *testing.T) {
 
 	if task.ID != taskID {
 		t.Fatalf("expected task id: %d, got: %d", taskID, task.ID)
+	}
+
+	if !repo.getByIDCalled {
+		t.Fatal("expected repository GetByID to be called")
+	}
+
+	if repo.gotTaskID != taskID {
+		t.Errorf("expected taskID %s, got %s", taskID, repo.gotTaskID)
+	}
+
+	if repo.gotClientID != clientID {
+		t.Errorf("expected clientID %s, got %s", clientID, repo.gotClientID)
 	}
 
 }
@@ -149,6 +168,10 @@ func TestService_Create(t *testing.T) {
 
 	if diff := cmp.Diff(actual, taskFromSameRequest); diff != "" {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	}
+
+	if repo.getByIDCalled {
+		t.Fatal("expected repository GetByID not to be called")
 	}
 
 }
