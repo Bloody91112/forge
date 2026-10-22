@@ -97,6 +97,10 @@ func TestService_GetByID_ThrowsErrOnClientIDMiss(t *testing.T) {
 	if !errors.Is(err, ErrMissingClientID) {
 		t.Fatalf("expected err: %v, got: %v", ErrMissingClientID, err)
 	}
+
+	if repo.getByIDCalled {
+		t.Fatal("expected repository GetByID not to be called")
+	}
 }
 
 func TestService_Create(t *testing.T) {
@@ -168,10 +172,6 @@ func TestService_Create(t *testing.T) {
 
 	if diff := cmp.Diff(actual, taskFromSameRequest); diff != "" {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
-	}
-
-	if repo.getByIDCalled {
-		t.Fatal("expected repository GetByID not to be called")
 	}
 
 }
