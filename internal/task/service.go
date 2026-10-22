@@ -12,9 +12,11 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrInvalidInput = errors.New("invalid input")
-var ErrMissingClientID = errors.New("missing client id in context")
-var ErrIdempotencyConflict = errors.New("idempotency key conflict")
+var (
+	ErrInvalidInput        = errors.New("invalid input")
+	ErrMissingClientID     = errors.New("missing client id in context")
+	ErrIdempotencyConflict = errors.New("idempotency key conflict")
+)
 
 const DefaultTaskMaxAttempts = 5
 const DefaultTaskTimeout = 300

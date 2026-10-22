@@ -77,7 +77,7 @@ func getTestDb(t *testing.T, cleanBeforeTest bool) (*pgxpool.Pool, error) {
 	}
 
 	if cleanBeforeTest {
-		_, err := pool.Exec(t.Context(), "TRUNCATE TABLE tasks, clients CASCADE;")
+		_, err := pool.Exec(t.Context(), "TRUNCATE TABLE tasks, clients, forge_settings CASCADE;")
 		if err != nil {
 			return nil, fmt.Errorf("failed to truncate test db: %w", err)
 		}
