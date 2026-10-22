@@ -45,7 +45,7 @@ func (r *ClientRepository) CreateClient(ctx context.Context, client auth.Client)
 	).Scan(&createdClient.ID, &createdClient.Name, &createdClient.TokenHash, &createdClient.CreatedAt)
 
 	if err != nil {
-		return auth.Client{}, err
+		return auth.Client{}, fmt.Errorf("create client: %w", err)
 	}
 
 	return createdClient, nil

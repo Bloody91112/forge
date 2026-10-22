@@ -237,7 +237,7 @@ func TestTaskRepository_CreateOrGetByIdempotencyKey_WithConcurrency(t *testing.T
 	}
 }
 
-func TestTaskRepository_CreateOrGetByIdempotencyKey_ReturnsErrWhenTaskBelongsToAnotherClient(t *testing.T) {
+func TestTaskRepository_GetByID_ReturnsErrWhenTaskBelongsToAnotherClient(t *testing.T) {
 	db, err := getTestDb(t, true)
 
 	if err != nil {

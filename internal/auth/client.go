@@ -7,8 +7,8 @@ import (
 )
 
 type Client struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	TokenHash string    `json:"token_hash"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID
+	Name      string
+	TokenHash string
+	CreatedAt time.Time
 }
