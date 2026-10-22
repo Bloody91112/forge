@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"forge/internal/auth"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,18 +18,35 @@ func NewClientRepository(db *pgxpool.Pool) *ClientRepository {
 	return &ClientRepository{db: db}
 }
 
-func (r *ClientRepository) GetClientIDByTokenHash(ctx context.Context, hash string) (uuid.UUID, error) {
-	var clientID uuid.UUID
+func (r *ClientRepository) GetClientByTokenHash(ctx context.Context, hash string) (auth.Client, error) {
+	var client auth.Client
 
-	err := r.db.QueryRow(ctx, "SELECT id FROM clients WHERE token_hash = $1", hash).Scan(&clientID)
+	err := r.db.QueryRow(ctx, "SELECT id, name, token_hash, created_at FROM clients WHERE token_hash = $1", hash).Scan(&client.ID, &client.Name, &client.TokenHash, &client.CreatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, auth.ErrClientNotFound
+		return auth.Client{}, auth.ErrClientNotFound
 	}
 
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("get client by token hash: %w", err)
+		return auth.Client{}, fmt.Errorf("get client by token hash: %w", err)
 	}
 
-	return clientID, nil
+	return client, nil
+}
+
+func (r *ClientRepository) CreateClient(ctx context.Context, client auth.Client) (auth.Client, error) {
+	var createdClient auth.Client
+
+	query := "INSERT INTO clients (id, name, token_hash) values ($1, $2, $3) RETURNING id, name, token_hash, created_at"
+	err := r.db.QueryRow(
+		ctx,
+		query,
+		client.ID, client.Name, client.TokenHash,
+	).Scan(&createdClient.ID, &createdClient.Name, &createdClient.TokenHash, &createdClient.CreatedAt)
+
+	if err != nil {
+		return auth.Client{}, err
+	}
+
+	return createdClient, nil
 }

@@ -10,17 +10,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type ClientRepositoryStub struct {
-	clientID uuid.UUID
-	err      error
+	client auth.Client
+	err    error
 }
 
-func (r *ClientRepositoryStub) GetClientIDByTokenHash(ctx context.Context, hash string) (uuid.UUID, error) {
-	return r.clientID, r.err
+func (r *ClientRepositoryStub) GetClientByTokenHash(ctx context.Context, hash string) (auth.Client, error) {
+	return r.client, r.err
 }
 
 func TestAuth(t *testing.T) {
@@ -102,7 +103,14 @@ func TestAuth(t *testing.T) {
 				}
 			})
 
-			repo := ClientRepositoryStub{clientID: tt.wantID, err: tt.repoErr}
+			client := auth.Client{
+				ID:        tt.wantID,
+				Name:      "BOB",
+				TokenHash: "123",
+				CreatedAt: time.Now(),
+			}
+
+			repo := ClientRepositoryStub{client: client, err: tt.repoErr}
 			authService := auth.NewService(&repo)
 			middleware := Auth(authService, handler)
 

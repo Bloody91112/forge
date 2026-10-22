@@ -14,7 +14,7 @@ import (
 var ErrClientNotFound = errors.New("client not found")
 
 type Repository interface {
-	GetClientIDByTokenHash(ctx context.Context, hash string) (uuid.UUID, error)
+	GetClientByTokenHash(ctx context.Context, hash string) (Client, error)
 }
 
 type Service struct {
@@ -33,8 +33,12 @@ func (s *Service) VerifyClientByToken(r *http.Request) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	hash := makeTokenHash(token)
-	return s.repo.GetClientIDByTokenHash(r.Context(), hash)
+	client, err := s.repo.GetClientByTokenHash(r.Context(), hash)
+	if err != nil {
+		return uuid.Nil, err
+	}
 
+	return client.ID, nil
 }
 
 func makeTokenHash(token string) string {

@@ -2,25 +2,15 @@ package postgres
 
 import (
 	"bytes"
-	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"forge/internal/config"
-	"forge/internal/database"
 	"forge/internal/task"
-	"log"
-	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 )
 
 func TestTaskRepository_CreateOrGetByIdempotencyKey(t *testing.T) {
@@ -245,79 +235,53 @@ func TestTaskRepository_CreateOrGetByIdempotencyKey_WithConcurrency(t *testing.T
 	if countRows != 1 {
 		t.Fatalf("expected row count, expected: %d, got:%d", 1, countRows)
 	}
-
 }
 
-func getTestClientID(t *testing.T, db *pgxpool.Pool) (uuid.UUID, error) {
-	var clientId uuid.UUID
-	tokenHash := rand.Text()
-
-	err := db.QueryRow(t.Context(), "INSERT INTO clients (id, name, token_hash) VALUES ($1, 'BOB', $2) RETURNING id", uuid.New(), tokenHash).Scan(&clientId)
-	return clientId, err
-}
-
-func getTestDb(t *testing.T, cleanBeforeTest bool) (*pgxpool.Pool, error) {
-	_ = godotenv.Load("../../.env")
-
-	dbName := os.Getenv("DB_DATABASE")
-	testDbName := os.Getenv("DB_TEST_DATABASE")
-	if testDbName == "" {
-		return nil, errors.New("env DB_TEST_DATABASE not specified")
-	}
-
-	if dbName == "" {
-		return nil, errors.New("env DB_DATABASE not specified")
-	}
-
-	if dbName == testDbName {
-		return nil, errors.New("env DB_TEST_DATABASE equals DB_DATABASE")
-	}
-
-	t.Setenv("DB_DATABASE", testDbName)
-
-	conf, err := config.Load()
-	if err != nil {
-		return nil, err
-	}
-
-	pool, err := database.Open(t.Context(), conf)
-	if err != nil {
-		return nil, err
-	}
-
-	t.Cleanup(func() {
-		pool.Close()
-	})
-
-	pingCtx, pingCancel := context.WithTimeout(t.Context(), 1*time.Second)
-	err = pool.Ping(pingCtx)
-	pingCancel()
+func TestTaskRepository_CreateOrGetByIdempotencyKey_ReturnsErrWhenTaskBelongsToAnotherClient(t *testing.T) {
+	db, err := getTestDb(t, true)
 
 	if err != nil {
-		return nil, fmt.Errorf("ping postgres, %w", err)
+		t.Fatalf("test db connection failed: %v", err)
 	}
 
-	var connectedDbName string
-	err = pool.QueryRow(t.Context(), "SELECT current_database()").Scan(&connectedDbName)
+	clientId, err := getTestClientID(t, db)
+
 	if err != nil {
-		return nil, fmt.Errorf("selecting current db: %w", err)
+		t.Fatalf("failed to create client: %v", err)
 	}
 
-	if connectedDbName != testDbName {
-		return nil, fmt.Errorf("wrong database connected: expected %q, got %q", testDbName, connectedDbName)
+	repo := NewTaskRepository(db)
+
+	expected := task.Task{
+		ID:             uuid.New(),
+		ClientID:       clientId,
+		IdempotencyKey: uuid.New().String(),
+		RequestHash:    "456",
+		Type:           "email-send",
+		Payload:        []byte(`{"user_id":42}`),
+		Status:         task.StatusQueued,
+		MaxAttempts:    12,
+		TimeoutSeconds: 100,
 	}
 
-	if cleanBeforeTest {
-		_, err := pool.Exec(t.Context(), "TRUNCATE TABLE tasks, clients CASCADE;")
-		if err != nil {
-			return nil, fmt.Errorf("failed to truncate test db: %w", err)
-		}
-		log.Println("test db successfully truncated")
-	} else {
-		log.Println("test db cleanup option is not selected")
+	otherClientId, err := getTestClientID(t, db)
+
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
 	}
 
-	return pool, nil
+	_, _, err = repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
+
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	_, err = repo.GetByID(t.Context(), expected.ID, otherClientId)
+
+	if !errors.Is(err, task.ErrTaskNotFound) {
+		t.Fatalf("expected err: %v, got: %v", task.ErrTaskNotFound, err)
+	}
+
 }
 
 func assertJSONEqual(t *testing.T, expected, actual json.RawMessage) {

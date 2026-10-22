@@ -6,17 +6,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type ClientRepositoryStub struct {
-	clientID uuid.UUID
-	err      error
+	client Client
+	err    error
 }
 
-func (r *ClientRepositoryStub) GetClientIDByTokenHash(ctx context.Context, hash string) (uuid.UUID, error) {
-	return r.clientID, r.err
+func (r *ClientRepositoryStub) GetClientByTokenHash(ctx context.Context, hash string) (Client, error) {
+	return r.client, r.err
 }
 
 func TestService_ExtractBearerToken(t *testing.T) {
@@ -126,7 +127,14 @@ func TestService_VerifyClientByToken(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Header.Set("Authorization", tt.authHeader)
 
-			repo := ClientRepositoryStub{tt.wantID, tt.wantErr}
+			client := Client{
+				ID:        tt.wantID,
+				Name:      "BOB",
+				TokenHash: "123",
+				CreatedAt: time.Now(),
+			}
+
+			repo := ClientRepositoryStub{client, tt.wantErr}
 			service := NewService(&repo)
 			id, serviceErr := service.VerifyClientByToken(req)
 

@@ -69,6 +69,17 @@ func TestService_GetByID_TaskNotFound(t *testing.T) {
 	}
 }
 
+func TestService_GetByID_ThrowsErrOnClientIDMiss(t *testing.T) {
+	repo := TaskRepositoryStub{}
+	service := NewService(&repo)
+
+	_, err := service.GetByID(t.Context(), uuid.New())
+
+	if !errors.Is(err, ErrMissingClientID) {
+		t.Fatalf("expected err: %v, got: %v", ErrMissingClientID, err)
+	}
+}
+
 func TestService_Create(t *testing.T) {
 	idempotencyKey := uuid.New().String()
 	clientID := uuid.New()
@@ -236,5 +247,27 @@ func TestService_CreateWithConflictHash(t *testing.T) {
 
 	if !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("expected err: %v, got: %v", ErrIdempotencyConflict, err)
+	}
+}
+
+func TestService_Create_ThrowsErrorOnClientIDMiss(t *testing.T) {
+	createTaskDTO := CreateTaskInput{
+		Type:           "email-send",
+		Payload:        []byte(`{"user_id":42}`),
+		IdempotencyKey: uuid.New().String(),
+	}
+
+	repo := TaskRepositoryStub{
+		err:        nil,
+		taskPassed: false,
+		created:    true,
+	}
+
+	service := NewService(&repo)
+
+	_, err := service.Create(t.Context(), createTaskDTO)
+
+	if !errors.Is(err, ErrMissingClientID) {
+		t.Fatalf("expected err: %v, got: %v", ErrMissingClientID, err)
 	}
 }
