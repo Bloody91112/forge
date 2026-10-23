@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"forge/internal/auth"
+	"forge/internal/bootstrap"
 	"forge/internal/config"
 	"forge/internal/database"
 	"forge/internal/handler"
@@ -12,7 +13,6 @@ import (
 	"forge/internal/postgres"
 	"forge/internal/settings"
 	"forge/internal/task"
-	"forge/internal/token"
 	"log"
 	"net/http"
 	"os"
@@ -136,10 +136,9 @@ func runBootstrapCommand(args []string) error {
 		return errors.New("expected exactly 1 bootstrap command, type help")
 	}
 
-	command := args[0]
-
-	if command != "init" && command != "rotate" {
-		return errors.New("unknown boostrap command: " + command)
+	command := bootstrap.Command(args[0])
+	if command != bootstrap.CommandInit && command != bootstrap.CommandRotate {
+		return fmt.Errorf("unknown bootstrap command: %s", command)
 	}
 
 	_ = godotenv.Load()
@@ -160,56 +159,18 @@ func runBootstrapCommand(args []string) error {
 
 	settingsRepo := postgres.NewSettingRepository(dbPool)
 	settingsService := settings.NewService(settingsRepo)
-	bootstrapSettingKey := "worker_bootstrap_token_hash"
+	bootstrapService := bootstrap.NewService(settingsService)
 
-	if command == "init" {
-		_, err := settingsService.GetSettingValue(ctx, bootstrapSettingKey)
-		if err == nil {
-			log.Println("Bootstrap token already initialized")
-			return nil
-		}
+	result, err := bootstrapService.Execute(ctx, command)
+	if err != nil {
+		return err
+	}
 
-		if !errors.Is(err, settings.ErrSettingNotFound) {
-			return fmt.Errorf("check current token err: %w", err)
-		}
-
-		generatedToken, err := token.GenerateBootstrapToken()
-		if err != nil {
-			return fmt.Errorf("generating token: %w", err)
-		}
-
-		tokenHash := token.HashToken(generatedToken)
-
-		if err := settingsService.CreateSetting(ctx, bootstrapSettingKey, tokenHash); err != nil {
-			return fmt.Errorf("save bootstrap token: %w", err)
-		}
-
-		log.Println("Bootstrap token: " + generatedToken)
+	if result.AlreadyInitialized {
+		log.Println("Bootstrap token already initialized")
 		return nil
 	}
 
-	_, err = settingsService.GetSettingValue(ctx, bootstrapSettingKey)
-
-	if errors.Is(err, settings.ErrSettingNotFound) {
-		return errors.New("bootstrap token not initialized; run 'forge bootstrap init' first")
-	}
-
-	if err != nil {
-		return fmt.Errorf("check current token: %w", err)
-	}
-
-	generatedToken, err := token.GenerateBootstrapToken()
-	if err != nil {
-		return fmt.Errorf("generating token: %w", err)
-	}
-
-	tokenHash := token.HashToken(generatedToken)
-
-	if err := settingsService.UpdateSettingValue(ctx, bootstrapSettingKey, tokenHash); err != nil {
-		return fmt.Errorf("update bootstrap token: %w", err)
-	}
-
-	log.Println("Bootstrap token: " + generatedToken)
+	log.Println("Bootstrap token: " + result.Token)
 	return nil
-
 }
