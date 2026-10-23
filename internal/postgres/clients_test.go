@@ -13,7 +13,7 @@ import (
 )
 
 func TestClientRepository_GetClientIDByTokenHash_ReturnsExistingClient(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
@@ -43,7 +43,7 @@ func TestClientRepository_GetClientIDByTokenHash_ReturnsExistingClient(t *testin
 }
 
 func TestClientRepository_GetClientIDByTokenHash_ReturnsErrorOnClientMiss(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
@@ -63,7 +63,7 @@ func TestClientRepository_GetClientIDByTokenHash_ReturnsErrorOnClientMiss(t *tes
 }
 
 func TestClientRepository_CreateClient(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)

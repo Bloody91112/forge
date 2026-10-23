@@ -17,7 +17,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-func GetTestClientID(t *testing.T, db *pgxpool.Pool) (uuid.UUID, error) {
+func CreateTestClient(t *testing.T, db *pgxpool.Pool) (uuid.UUID, error) {
 	var clientId uuid.UUID
 	tokenHash := rand.Text()
 
@@ -25,7 +25,7 @@ func GetTestClientID(t *testing.T, db *pgxpool.Pool) (uuid.UUID, error) {
 	return clientId, err
 }
 
-func GetTestDb(t *testing.T, cleanBeforeTest bool) (*pgxpool.Pool, error) {
+func OpenPostgres(t *testing.T, cleanBeforeTest bool) (*pgxpool.Pool, error) {
 	_ = godotenv.Load("../../.env")
 
 	dbName := os.Getenv("DB_DATABASE")

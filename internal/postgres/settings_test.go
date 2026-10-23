@@ -9,7 +9,7 @@ import (
 )
 
 func TestSettingRepository_CreateAndGet(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestSettingRepository_CreateAndGet(t *testing.T) {
 }
 
 func TestSettingRepository_GetNotFound(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestSettingRepository_GetNotFound(t *testing.T) {
 }
 
 func TestSettingRepository_CreateDuplicateKey(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestSettingRepository_CreateDuplicateKey(t *testing.T) {
 }
 
 func TestSettingRepository_Update(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestSettingRepository_Update(t *testing.T) {
 }
 
 func TestSettingRepository_UpdateNotFound(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}

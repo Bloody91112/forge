@@ -15,13 +15,13 @@ import (
 )
 
 func TestTaskRepository_CreateOrGetByIdempotencyKey(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}
 
-	clientId, err := testutil.GetTestClientID(t, db)
+	clientId, err := testutil.CreateTestClient(t, db)
 
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -82,7 +82,7 @@ func TestTaskRepository_CreateOrGetByIdempotencyKey(t *testing.T) {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
 	}
 
-	otherClientId, err := testutil.GetTestClientID(t, db)
+	otherClientId, err := testutil.CreateTestClient(t, db)
 
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -119,13 +119,13 @@ func TestTaskRepository_CreateOrGetByIdempotencyKey(t *testing.T) {
 }
 
 func TestTaskRepository_GetByID(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}
 
-	clientId, err := testutil.GetTestClientID(t, db)
+	clientId, err := testutil.CreateTestClient(t, db)
 
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -174,13 +174,13 @@ func TestTaskRepository_GetByID(t *testing.T) {
 }
 
 func TestTaskRepository_CreateOrGetByIdempotencyKey_WithConcurrency(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}
 
-	clientId, err := testutil.GetTestClientID(t, db)
+	clientId, err := testutil.CreateTestClient(t, db)
 
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -239,13 +239,13 @@ func TestTaskRepository_CreateOrGetByIdempotencyKey_WithConcurrency(t *testing.T
 }
 
 func TestTaskRepository_GetByID_ReturnsErrWhenTaskBelongsToAnotherClient(t *testing.T) {
-	db, err := testutil.GetTestDb(t, true)
+	db, err := testutil.OpenPostgres(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
 	}
 
-	clientId, err := testutil.GetTestClientID(t, db)
+	clientId, err := testutil.CreateTestClient(t, db)
 
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -265,7 +265,7 @@ func TestTaskRepository_GetByID_ReturnsErrWhenTaskBelongsToAnotherClient(t *test
 		TimeoutSeconds: 100,
 	}
 
-	otherClientId, err := testutil.GetTestClientID(t, db)
+	otherClientId, err := testutil.CreateTestClient(t, db)
 
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
