@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"forge/internal/auth"
+	"forge/internal/testutil"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -12,7 +13,7 @@ import (
 )
 
 func TestClientRepository_GetClientIDByTokenHash_ReturnsExistingClient(t *testing.T) {
-	db, err := getTestDb(t, true)
+	db, err := testutil.GetTestDb(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
@@ -42,7 +43,7 @@ func TestClientRepository_GetClientIDByTokenHash_ReturnsExistingClient(t *testin
 }
 
 func TestClientRepository_GetClientIDByTokenHash_ReturnsErrorOnClientMiss(t *testing.T) {
-	db, err := getTestDb(t, true)
+	db, err := testutil.GetTestDb(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
@@ -62,7 +63,7 @@ func TestClientRepository_GetClientIDByTokenHash_ReturnsErrorOnClientMiss(t *tes
 }
 
 func TestClientRepository_CreateClient(t *testing.T) {
-	db, err := getTestDb(t, true)
+	db, err := testutil.GetTestDb(t, true)
 
 	if err != nil {
 		t.Fatalf("test db connection failed: %v", err)
