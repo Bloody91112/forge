@@ -10,7 +10,9 @@ import (
 	"forge/internal/handler"
 	"forge/internal/middleware"
 	"forge/internal/postgres"
+	"forge/internal/settings"
 	"forge/internal/task"
+	"forge/internal/token"
 	"log"
 	"net/http"
 	"os"
@@ -29,6 +31,25 @@ func main() {
 }
 
 func run() error {
+
+	args := os.Args[1:]
+
+	if len(args) == 0 {
+		return runServer()
+	}
+
+	switch args[0] {
+	case "help":
+		printUsage()
+		return nil
+	case "bootstrap":
+		return runBootstrapCommand(args[1:])
+	default:
+		return fmt.Errorf("unknown command: %s", args[0])
+	}
+}
+
+func runServer() error {
 	_ = godotenv.Load()
 
 	conf, err := config.Load()
@@ -100,4 +121,95 @@ func run() error {
 	}
 
 	return runErr
+}
+
+func printUsage() {
+	fmt.Println(`Usage:
+  forge                          Start the HTTP server
+  forge help                     Show this help
+  forge bootstrap init           Initialize the bootstrap token
+  forge bootstrap rotate         Rotate the bootstrap token`)
+}
+
+func runBootstrapCommand(args []string) error {
+	if len(args) != 1 {
+		return errors.New("expected exactly 1 bootstrap command, type help")
+	}
+
+	command := args[0]
+
+	if command != "init" && command != "rotate" {
+		return errors.New("unknown boostrap command: " + command)
+	}
+
+	_ = godotenv.Load()
+
+	conf, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	dbPool, err := database.Open(ctx, conf)
+	if err != nil {
+		return err
+	}
+	defer dbPool.Close()
+
+	settingsRepo := postgres.NewSettingRepository(dbPool)
+	settingsService := settings.NewService(settingsRepo)
+	bootstrapSettingKey := "worker_bootstrap_token_hash"
+
+	if command == "init" {
+		_, err := settingsService.GetSettingValue(ctx, bootstrapSettingKey)
+		if err == nil {
+			log.Println("Bootstrap token already initialized")
+			return nil
+		}
+
+		if !errors.Is(err, settings.ErrSettingNotFound) {
+			return fmt.Errorf("check current token err: %w", err)
+		}
+
+		generatedToken, err := token.GenerateBootstrapToken()
+		if err != nil {
+			return fmt.Errorf("generating token: %w", err)
+		}
+
+		tokenHash := token.HashToken(generatedToken)
+
+		if err := settingsService.CreateSetting(ctx, bootstrapSettingKey, tokenHash); err != nil {
+			return fmt.Errorf("save bootstrap token: %w", err)
+		}
+
+		log.Println("Bootstrap token: " + generatedToken)
+		return nil
+	}
+
+	_, err = settingsService.GetSettingValue(ctx, bootstrapSettingKey)
+
+	if errors.Is(err, settings.ErrSettingNotFound) {
+		return errors.New("bootstrap token not initialized; run 'forge bootstrap init' first")
+	}
+
+	if err != nil {
+		return fmt.Errorf("check current token: %w", err)
+	}
+
+	generatedToken, err := token.GenerateBootstrapToken()
+	if err != nil {
+		return fmt.Errorf("generating token: %w", err)
+	}
+
+	tokenHash := token.HashToken(generatedToken)
+
+	if err := settingsService.UpdateSettingValue(ctx, bootstrapSettingKey, tokenHash); err != nil {
+		return fmt.Errorf("update bootstrap token: %w", err)
+	}
+
+	log.Println("Bootstrap token: " + generatedToken)
+	return nil
+
 }
