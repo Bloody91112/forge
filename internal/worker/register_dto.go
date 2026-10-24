@@ -8,8 +8,7 @@ import (
 )
 
 type RegisterWorkerInput struct {
-	ID              uuid.UUID       `json:"id"`
-	BootstrapToken  string          `json:"bootstrap_token"`
+	ID              uuid.UUID       `json:"worker_id"`
 	ProtocolVersion string          `json:"protocol_version"`
 	Capabilities    json.RawMessage `json:"capabilities"`
 }

@@ -15,6 +15,7 @@ import (
 
 var ErrInvalidInput = errors.New("invalid worker input")
 var ErrInvalidBootstrapToken = errors.New("invalid bootstrap token")
+var ErrUnsupportedProtocolVersion = errors.New("unsupported protocol version")
 
 const LeaseSeconds = 30
 const RequiredProtocolVersion = "1"
@@ -35,8 +36,8 @@ func NewService(workersRepo Repository, bootstrapService bootstrap.Service) *Ser
 	}
 }
 
-func (s *Service) Register(ctx context.Context, input RegisterWorkerInput) (RegisterWorkerOutput, error) {
-	if input.BootstrapToken == "" {
+func (s *Service) Register(ctx context.Context, bootstrapToken string, input RegisterWorkerInput) (RegisterWorkerOutput, error) {
+	if bootstrapToken == "" {
 		return RegisterWorkerOutput{}, fmt.Errorf("bootstrap token empty string provided: %w", ErrInvalidInput)
 	}
 
@@ -45,7 +46,7 @@ func (s *Service) Register(ctx context.Context, input RegisterWorkerInput) (Regi
 	}
 
 	if input.ProtocolVersion != RequiredProtocolVersion {
-		return RegisterWorkerOutput{}, fmt.Errorf("invalid protocol version: %s, %w", input.ProtocolVersion, ErrInvalidInput)
+		return RegisterWorkerOutput{}, fmt.Errorf("unsupported protocol version %q: %w", input.ProtocolVersion, ErrUnsupportedProtocolVersion)
 	}
 
 	capabilities, err := extractWorkerCapabilities(input.Capabilities)
@@ -53,7 +54,7 @@ func (s *Service) Register(ctx context.Context, input RegisterWorkerInput) (Regi
 		return RegisterWorkerOutput{}, err
 	}
 
-	tokenOk, err := s.bootstrapService.Validate(ctx, input.BootstrapToken)
+	tokenOk, err := s.bootstrapService.Validate(ctx, bootstrapToken)
 	if err != nil {
 		return RegisterWorkerOutput{}, fmt.Errorf("failed to validate token, err: %w", err)
 	}
