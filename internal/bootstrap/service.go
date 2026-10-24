@@ -11,9 +11,7 @@ import (
 
 const settingKey = "worker_bootstrap_token_hash"
 
-var ErrTokenNotInitialized = errors.New(
-	"bootstrap token not initialized; run 'forge bootstrap init' first",
-)
+var ErrTokenNotInitialized = errors.New("bootstrap token not initialized; run 'forge bootstrap init' first")
 
 type Settings interface {
 	GetSettingValue(ctx context.Context, key string) (string, error)
@@ -102,4 +100,13 @@ func (s *Service) rotate(ctx context.Context) (Result, error) {
 	}
 
 	return Result{Token: generatedToken}, nil
+}
+
+func (s *Service) Validate(ctx context.Context, inputBootstrapToken string) (bool, error) {
+	storageTokenHash, err := s.settings.GetSettingValue(ctx, settingKey)
+	if err != nil {
+		return false, fmt.Errorf("get token from storage: %w", err)
+	}
+
+	return storageTokenHash == token.HashToken(inputBootstrapToken), nil
 }
