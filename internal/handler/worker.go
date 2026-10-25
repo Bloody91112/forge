@@ -17,6 +17,10 @@ type WorkerHandler struct {
 	service WorkerService
 }
 
+func NewWorkerHandler(service WorkerService) *WorkerHandler {
+	return &WorkerHandler{service: service}
+}
+
 type WorkerService interface {
 	Register(ctx context.Context, bootstrapToken string, input worker.RegisterWorkerInput) (worker.RegisterWorkerOutput, error)
 }
@@ -39,6 +43,8 @@ func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		httpresponse.ResponseError(w, http.StatusUnauthorized, httpresponse.ErrCodeNotAuthorized, "Not authorized")
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var input worker.RegisterWorkerInput
 	decoder := json.NewDecoder(r.Body)

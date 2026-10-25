@@ -35,16 +35,6 @@ func TestAuth(t *testing.T) {
 		repoErr      error
 	}{
 		{
-			name:         "no auth for healthz route",
-			path:         "/healthz",
-			wantHttpCode: http.StatusOK,
-		},
-		{
-			name:         "no auth for readyz route",
-			path:         "/readyz",
-			wantHttpCode: http.StatusOK,
-		},
-		{
 			name:         "happy path",
 			authHeader:   "Bearer 123",
 			path:         "/any",

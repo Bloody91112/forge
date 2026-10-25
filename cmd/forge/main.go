@@ -13,6 +13,7 @@ import (
 	"forge/internal/postgres"
 	"forge/internal/settings"
 	"forge/internal/task"
+	"forge/internal/worker"
 	"log"
 	"net/http"
 	"os"
@@ -76,15 +77,28 @@ func runServer() error {
 	clientRepository := postgres.NewClientRepository(dbPool)
 	authService := auth.NewService(clientRepository)
 
+	settingsRepo := postgres.NewSettingRepository(dbPool)
+	settingsService := settings.NewService(settingsRepo)
+	bootstrapService := bootstrap.NewService(settingsService)
+
+	workerRepo := postgres.NewWorkerRepository(dbPool)
+	workerService := worker.NewService(workerRepo, bootstrapService)
+	workerHandler := handler.NewWorkerHandler(workerService)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Check)
 	mux.HandleFunc("GET /readyz", readiness.Check)
-	mux.HandleFunc("POST /api/v1/tasks", taskHandler.CreateTask)
-	mux.HandleFunc("GET /api/v1/tasks/{id}", taskHandler.GetTask)
+	mux.HandleFunc("POST /internal/v1/workers/register", workerHandler.Register)
+
+	clientMux := http.NewServeMux()
+	clientMux.HandleFunc("POST /api/v1/tasks", taskHandler.CreateTask)
+	clientMux.HandleFunc("GET /api/v1/tasks/{id}", taskHandler.GetTask)
+
+	mux.Handle("/api/v1/", middleware.Auth(authService, clientMux))
 
 	server := &http.Server{
 		Addr:              conf.HTTPAddr,
-		Handler:           middleware.Auth(authService, mux),
+		Handler:           mux,
 		ReadTimeout:       2 * time.Second,
 		ReadHeaderTimeout: 2 * time.Second,
 		WriteTimeout:      10 * time.Second,

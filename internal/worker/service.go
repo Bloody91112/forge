@@ -26,10 +26,10 @@ type Repository interface {
 
 type Service struct {
 	workersRepo      Repository
-	bootstrapService bootstrap.Service
+	bootstrapService *bootstrap.Service
 }
 
-func NewService(workersRepo Repository, bootstrapService bootstrap.Service) *Service {
+func NewService(workersRepo Repository, bootstrapService *bootstrap.Service) *Service {
 	return &Service{
 		workersRepo:      workersRepo,
 		bootstrapService: bootstrapService,

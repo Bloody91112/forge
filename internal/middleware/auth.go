@@ -12,11 +12,6 @@ import (
 
 func Auth(authService *auth.Service, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isPublicRoute(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		clientID, err := authService.VerifyClientByToken(r)
 		if err != nil {
 			switch {
@@ -37,15 +32,4 @@ func Auth(authService *auth.Service, next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-func isPublicRoute(r *http.Request) bool {
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/healthz":
-		return true
-	case r.Method == http.MethodGet && r.URL.Path == "/readyz":
-		return true
-	default:
-		return false
-	}
 }
