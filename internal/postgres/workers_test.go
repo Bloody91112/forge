@@ -98,7 +98,7 @@ func TestWorkerRepository_RegisterAndReplaceExistingWorker(t *testing.T) {
 	replacement := worker.Worker{
 		ID:              workerID,
 		TokenHash:       "replacement-token-hash",
-		ProtocolVersion: "1",
+		ProtocolVersion: "2",
 		Capabilities:    []string{"webhook", "email"},
 		RegisteredAt:    replacementAt,
 		LeaseExpiresAt:  replacementAt.Add(30 * time.Second),
