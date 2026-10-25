@@ -5,6 +5,7 @@ import (
 	"forge/internal/auth"
 	"forge/internal/httpresponse"
 	"forge/internal/task"
+	"forge/internal/token"
 	"log"
 	"net/http"
 )
@@ -19,7 +20,7 @@ func Auth(authService *auth.Service, next http.Handler) http.Handler {
 		clientID, err := authService.VerifyClientByToken(r)
 		if err != nil {
 			switch {
-			case errors.Is(err, auth.ErrInvalidAuthToken),
+			case errors.Is(err, token.ErrInvalidAuthToken),
 				errors.Is(err, auth.ErrClientNotFound):
 				httpresponse.ResponseError(w, http.StatusUnauthorized, httpresponse.ErrCodeNotAuthorized, "Not authorized")
 

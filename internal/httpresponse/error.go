@@ -7,19 +7,21 @@ import (
 )
 
 const (
-	ErrCodeMediaTypeParseError = "media_type_parse_error"
-	ErrCodeMediaTypeError      = "media_type_error"
-	ErrCodeIdempotencyKeyError = "idempotency_key_error"
-	ErrCodeIdempotencyConflict = "idempotency_key_conflict"
-	ErrCodeInvalidJSONPayload  = "invalid_json_payload"
-	ErrCodeRequestBodyLimit    = "request_body_limit_error"
-	ErrCodeInvalidPayload      = "invalid_payload_params"
-	ErrCodeCreateTaskFailed    = "create_task_error"
-	ErrCodeInvalidTaskID       = "invalid_task_id"
-	ErrCodeTaskNotFound        = "task_not_found"
-	ErrCodeGetTaskFailed       = "get_task_failed"
-	ErrCodeNotAuthorized       = "not_authorized"
-	ErrCodeAuthFailed          = "failed_to_authorize"
+	ErrCodeMediaTypeParseError    = "media_type_parse_error"
+	ErrCodeMediaTypeError         = "media_type_error"
+	ErrCodeIdempotencyKeyError    = "idempotency_key_error"
+	ErrCodeIdempotencyConflict    = "idempotency_key_conflict"
+	ErrCodeInvalidJSONPayload     = "invalid_json_payload"
+	ErrCodeRequestBodyLimit       = "request_body_limit_error"
+	ErrCodeInvalidPayload         = "invalid_payload_params"
+	ErrCodeCreateTaskFailed       = "create_task_error"
+	ErrCodeInvalidTaskID          = "invalid_task_id"
+	ErrCodeTaskNotFound           = "task_not_found"
+	ErrCodeGetTaskFailed          = "get_task_failed"
+	ErrCodeNotAuthorized          = "not_authorized"
+	ErrCodeAuthFailed             = "failed_to_authorize"
+	ErrUnsupportedProtocolVersion = "unsupported_protocol_version"
+	ErrCodeRegisterWorkerFailed   = "register_worker_failed"
 )
 
 type ErrorResponse struct {

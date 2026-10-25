@@ -36,7 +36,7 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if mediaType != "application/json" {
-		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeMediaTypeError, "JSON content-type required")
+		httpresponse.ResponseError(w, http.StatusUnsupportedMediaType, httpresponse.ErrCodeMediaTypeError, "JSON content-type required")
 		return
 	}
 

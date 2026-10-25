@@ -60,7 +60,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 				"Idempotency-Key": idempotencyKey,
 			},
 			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
-			wantHttpCode: http.StatusBadRequest,
+			wantHttpCode: http.StatusUnsupportedMediaType,
 			wantErrCode:  httpresponse.ErrCodeMediaTypeError,
 		},
 		{
