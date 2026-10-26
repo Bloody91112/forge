@@ -26,6 +26,11 @@ func (r *workerRepositoryStub) Register(_ context.Context, w Worker) error {
 	return r.err
 }
 
+func (r *workerRepositoryStub) ExtendLease(ctx context.Context, id uuid.UUID, newLeaseEndTime time.Time, seenAt time.Time) error {
+	r.calls++
+	return r.err
+}
+
 type bootstrapSettingsStub struct {
 	value    string
 	getErr   error
@@ -49,8 +54,8 @@ func newWorkerService(repo *workerRepositoryStub, settings *bootstrapSettingsStu
 	return NewService(repo, bootstrap.NewService(settings))
 }
 
-func validRegisterInput() RegisterWorkerInput {
-	return RegisterWorkerInput{
+func validRegisterInput() RegisterRequestDTO {
+	return RegisterRequestDTO{
 		ID:              uuid.New(),
 		ProtocolVersion: RequiredProtocolVersion,
 		Capabilities:    json.RawMessage(`["email","webhook"]`),
@@ -140,7 +145,7 @@ func TestService_Register(t *testing.T) {
 		tests := []struct {
 			name      string
 			token     string
-			input     RegisterWorkerInput
+			input     RegisterRequestDTO
 			wantError error
 		}{
 			{
@@ -152,7 +157,7 @@ func TestService_Register(t *testing.T) {
 			{
 				name:  "nil worker ID",
 				token: bootstrapToken,
-				input: RegisterWorkerInput{
+				input: RegisterRequestDTO{
 					ProtocolVersion: RequiredProtocolVersion,
 					Capabilities:    json.RawMessage(`[]`),
 				},
@@ -161,7 +166,7 @@ func TestService_Register(t *testing.T) {
 			{
 				name:  "unsupported protocol",
 				token: bootstrapToken,
-				input: RegisterWorkerInput{
+				input: RegisterRequestDTO{
 					ID:              uuid.New(),
 					ProtocolVersion: "2",
 					Capabilities:    json.RawMessage(`[]`),
@@ -171,7 +176,7 @@ func TestService_Register(t *testing.T) {
 			{
 				name:  "capabilities must be an array",
 				token: bootstrapToken,
-				input: RegisterWorkerInput{
+				input: RegisterRequestDTO{
 					ID:              uuid.New(),
 					ProtocolVersion: RequiredProtocolVersion,
 					Capabilities:    json.RawMessage(`{"email":true}`),
@@ -181,7 +186,7 @@ func TestService_Register(t *testing.T) {
 			{
 				name:  "capabilities cannot be null",
 				token: bootstrapToken,
-				input: RegisterWorkerInput{
+				input: RegisterRequestDTO{
 					ID:              uuid.New(),
 					ProtocolVersion: RequiredProtocolVersion,
 					Capabilities:    json.RawMessage(`null`),
@@ -191,7 +196,7 @@ func TestService_Register(t *testing.T) {
 			{
 				name:  "capability cannot be blank",
 				token: bootstrapToken,
-				input: RegisterWorkerInput{
+				input: RegisterRequestDTO{
 					ID:              uuid.New(),
 					ProtocolVersion: RequiredProtocolVersion,
 					Capabilities:    json.RawMessage(`["   "]`),
@@ -201,7 +206,7 @@ func TestService_Register(t *testing.T) {
 			{
 				name:  "capability cannot have surrounding whitespace",
 				token: bootstrapToken,
-				input: RegisterWorkerInput{
+				input: RegisterRequestDTO{
 					ID:              uuid.New(),
 					ProtocolVersion: RequiredProtocolVersion,
 					Capabilities:    json.RawMessage(`[" email"]`),
@@ -211,7 +216,7 @@ func TestService_Register(t *testing.T) {
 			{
 				name:  "capabilities cannot contain duplicates",
 				token: bootstrapToken,
-				input: RegisterWorkerInput{
+				input: RegisterRequestDTO{
 					ID:              uuid.New(),
 					ProtocolVersion: RequiredProtocolVersion,
 					Capabilities:    json.RawMessage(`["email","email"]`),

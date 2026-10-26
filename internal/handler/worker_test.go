@@ -18,18 +18,26 @@ import (
 )
 
 type workerServiceStub struct {
-	output worker.RegisterWorkerOutput
+	output worker.RegisterResponseDTO
 	err    error
 	calls  int
 	token  string
-	input  worker.RegisterWorkerInput
+	input  worker.RegisterRequestDTO
 }
 
-func (s *workerServiceStub) Register(ctx context.Context, bootstrapToken string, input worker.RegisterWorkerInput) (worker.RegisterWorkerOutput, error) {
+func (s *workerServiceStub) Register(ctx context.Context, bootstrapToken string, input worker.RegisterRequestDTO) (worker.RegisterResponseDTO, error) {
 	s.calls++
 	s.token = bootstrapToken
 	s.input = input
 	return s.output, s.err
+}
+
+func (s *workerServiceStub) ExtendLease(ctx context.Context, input worker.HeartbeatRequestDTO) (worker.HeartbeatResponseDTO, error) {
+	s.calls++
+	return worker.HeartbeatResponseDTO{
+		WorkerID:       input.WorkerID,
+		LeaseExpiresAt: time.Now().Add(time.Duration(worker.LeaseSeconds) * time.Second),
+	}, s.err
 }
 
 func workerRequest(body string) *http.Request {
@@ -164,7 +172,7 @@ func TestWorkerHandler_RegisterMapsServiceErrors(t *testing.T) {
 			name:       "unsupported protocol version",
 			serviceErr: worker.ErrUnsupportedProtocolVersion,
 			wantStatus: http.StatusUnprocessableEntity,
-			wantCode:   httpresponse.ErrUnsupportedProtocolVersion,
+			wantCode:   httpresponse.ErrCodeUnsupportedProtocolVersion,
 		},
 		{
 			name:       "unexpected service error",
@@ -196,7 +204,7 @@ func TestWorkerHandler_RegisterMapsServiceErrors(t *testing.T) {
 }
 
 func TestWorkerHandler_RegisterSuccess(t *testing.T) {
-	want := worker.RegisterWorkerOutput{
+	want := worker.RegisterResponseDTO{
 		ID:             uuid.New(),
 		Token:          "generated-worker-token",
 		LeaseExpiresAt: workerLeaseExpiry(),
@@ -247,7 +255,7 @@ func TestWorkerHandler_RegisterSuccess(t *testing.T) {
 		t.Fatalf("service capabilities mismatch (-want +got):\n%s", diff)
 	}
 
-	var got worker.RegisterWorkerOutput
+	var got worker.RegisterResponseDTO
 	if err := json.NewDecoder(recorder.Body).Decode(&got); err != nil {
 		t.Fatalf("decode success response: %v", err)
 	}

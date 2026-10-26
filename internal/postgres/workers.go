@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"forge/internal/auth"
 	"forge/internal/worker"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -75,4 +77,19 @@ func (r *WorkerRepository) GetWorkerByTokenHash(ctx context.Context, hash string
 	}
 
 	return foundWorker, nil
+}
+
+func (r *WorkerRepository) ExtendLease(ctx context.Context, id uuid.UUID, leaseExpiresAt time.Time, seenAt time.Time) error {
+	query := "UPDATE workers SET lease_expires_at = $1, last_seen_at = $2 WHERE id = $3"
+	tag, err := r.db.Exec(ctx, query, leaseExpiresAt, seenAt, id)
+
+	if err != nil {
+		return fmt.Errorf("extend worker lease: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return worker.ErrWorkerNotFound
+	}
+
+	return nil
 }

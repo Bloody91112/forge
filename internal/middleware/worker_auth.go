@@ -5,13 +5,16 @@ import (
 	"forge/internal/auth"
 	"forge/internal/httpresponse"
 	"forge/internal/token"
+	"forge/internal/worker"
 	"log"
 	"net/http"
 )
 
 func WorkerAuth(authService *auth.WorkerService, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := authService.VerifyWorkerByToken(r); err != nil {
+		workerID, err := authService.VerifyWorkerByToken(r)
+
+		if err != nil {
 			switch {
 			case errors.Is(err, token.ErrInvalidAuthToken),
 				errors.Is(err, auth.ErrWorkerNotFound):
@@ -24,6 +27,9 @@ func WorkerAuth(authService *auth.WorkerService, next http.Handler) http.Handler
 
 			return
 		}
+
+		ctx := worker.WithID(r.Context(), workerID)
+		r = r.WithContext(ctx)
 
 		next.ServeHTTP(w, r)
 	})

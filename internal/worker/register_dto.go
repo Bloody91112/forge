@@ -7,13 +7,13 @@ import (
 	"github.com/google/uuid"
 )
 
-type RegisterWorkerInput struct {
+type RegisterRequestDTO struct {
 	ID              uuid.UUID       `json:"worker_id"`
 	ProtocolVersion string          `json:"protocol_version"`
 	Capabilities    json.RawMessage `json:"capabilities"`
 }
 
-type RegisterWorkerOutput struct {
+type RegisterResponseDTO struct {
 	ID             uuid.UUID `json:"worker_id"`
 	Token          string    `json:"worker_token"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`

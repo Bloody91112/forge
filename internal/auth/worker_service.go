@@ -7,6 +7,8 @@ import (
 	"forge/internal/token"
 	"forge/internal/worker"
 	"net/http"
+
+	"github.com/google/uuid"
 )
 
 var ErrWorkerNotFound = errors.New("worker not found")
@@ -23,16 +25,18 @@ func NewWorkerService(repo WorkerRepository) *WorkerService {
 	return &WorkerService{repo: repo}
 }
 
-func (s *WorkerService) VerifyWorkerByToken(r *http.Request) error {
+func (s *WorkerService) VerifyWorkerByToken(r *http.Request) (uuid.UUID, error) {
 	workerToken, err := token.ExtractBearerToken(r)
 	if err != nil {
-		return fmt.Errorf("extract worker token: %w", err)
+		return uuid.Nil, fmt.Errorf("extract worker token: %w", err)
 	}
 	hash := token.HashToken(workerToken)
 
-	if _, err := s.repo.GetWorkerByTokenHash(r.Context(), hash); err != nil {
-		return fmt.Errorf("get worker by token: %w", err)
+	foundWorker, err := s.repo.GetWorkerByTokenHash(r.Context(), hash)
+
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("get worker by token: %w", err)
 	}
 
-	return nil
+	return foundWorker.ID, nil
 }

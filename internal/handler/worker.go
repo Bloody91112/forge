@@ -23,7 +23,8 @@ func NewWorkerHandler(service WorkerService) *WorkerHandler {
 }
 
 type WorkerService interface {
-	Register(ctx context.Context, bootstrapToken string, input worker.RegisterWorkerInput) (worker.RegisterWorkerOutput, error)
+	Register(ctx context.Context, bootstrapToken string, input worker.RegisterRequestDTO) (worker.RegisterResponseDTO, error)
+	ExtendLease(ctx context.Context, input worker.HeartbeatRequestDTO) (worker.HeartbeatResponseDTO, error)
 }
 
 func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +38,7 @@ func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var input worker.RegisterWorkerInput
+	var input worker.RegisterRequestDTO
 
 	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &input, 1<<20) {
 		return
@@ -56,7 +57,7 @@ func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if errors.Is(err, worker.ErrUnsupportedProtocolVersion) {
-		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrUnsupportedProtocolVersion, "Unsupported protocol version")
+		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeUnsupportedProtocolVersion, "Unsupported protocol version")
 		return
 	}
 
@@ -71,4 +72,43 @@ func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *WorkerHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {}
+func (h *WorkerHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
+	if !h.baseHandler.CheckJSONContentType(w, r) {
+		return
+	}
+
+	var input worker.HeartbeatRequestDTO
+
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &input, 1<<20) {
+		return
+	}
+
+	output, err := h.service.ExtendLease(r.Context(), input)
+
+	if errors.Is(err, worker.ErrInvalidInput) {
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
+		return
+	}
+
+	if errors.Is(err, worker.ErrWorkerNotFound) {
+		httpresponse.ResponseError(w, http.StatusNotFound, httpresponse.ErrCodeWorkerNotFound, "Worker not found")
+		return
+	}
+
+	if errors.Is(err, worker.ErrMissingWorkerID) {
+		log.Printf("no worker id provided, err: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeHeartbeatWorkerFailed, "Failed to heartbeat worker")
+		return
+	}
+
+	if err != nil {
+		log.Printf("worker heartbeat unknown err: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeHeartbeatWorkerFailed, "Failed to heartbeat worker")
+		return
+	}
+
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusOK, "worker with heartbeat", output); err != nil {
+		log.Print(err)
+	}
+
+}

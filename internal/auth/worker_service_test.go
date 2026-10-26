@@ -90,12 +90,17 @@ func TestWorkerService_VerifyWorkerByToken(t *testing.T) {
 				req.Header.Set("Authorization", tt.authHeader)
 			}
 
-			err := service.VerifyWorkerByToken(req)
+			workerID, err := service.VerifyWorkerByToken(req)
 
 			if tt.wantErr == nil {
 				if err != nil {
 					t.Fatalf("VerifyWorkerByToken() error = %v, want nil", err)
 				}
+
+				if workerID == uuid.Nil {
+					t.Fatal("got nil worker uuid")
+				}
+
 			} else if !errors.Is(err, tt.wantErr) {
 				t.Fatalf(
 					"VerifyWorkerByToken() error = %v, want errors.Is(_, %v)",
