@@ -41,7 +41,7 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 
 	var taskInput task.CreateTaskInput
 
-	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, taskInput, 1<<20) {
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &taskInput, 1<<20) {
 		return
 	}
 
@@ -70,7 +70,7 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusCreated, "created task", createdTask); err != nil {
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusAccepted, "created task", newCreateTaskResponse(createdTask)); err != nil {
 		log.Print(err)
 	}
 }

@@ -38,7 +38,8 @@ func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input worker.RegisterWorkerInput
-	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, input, 1<<20) {
+
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &input, 1<<20) {
 		return
 	}
 

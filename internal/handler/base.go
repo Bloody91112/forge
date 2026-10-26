@@ -53,10 +53,16 @@ func (b *BaseHandler) DecodeJSONAndCheckErrors(w http.ResponseWriter, r *http.Re
 }
 
 func (b *BaseHandler) EncodeJSONResponse(w http.ResponseWriter, status int, targetName string, target any) error {
+	body, err := json.Marshal(target)
+	if err != nil {
+		return fmt.Errorf("failed to encode %s: %w", targetName, err)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(target); err != nil {
-		return fmt.Errorf("failed to encode %s: %w", targetName, err)
+
+	if _, err := w.Write(append(body, '\n')); err != nil {
+		return fmt.Errorf("failed to write %s: %w", targetName, err)
 	}
 
 	return nil
