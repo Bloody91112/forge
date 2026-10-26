@@ -232,3 +232,95 @@ func TestWorkerRepository_GetWorkerByTokenHash(t *testing.T) {
 		)
 	}
 }
+
+func TestWorkerRepository_ExtendLease(t *testing.T) {
+	db, err := testutil.OpenPostgres(t, true)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+
+	repo := NewWorkerRepository(db)
+	workerID := uuid.New()
+
+	registeredAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	oldExpiry := registeredAt.Add(30 * time.Second)
+
+	w := worker.Worker{
+		ID:              workerID,
+		TokenHash:       "heartbeat-token-hash",
+		ProtocolVersion: "1",
+		Capabilities:    []string{"email"},
+		RegisteredAt:    registeredAt,
+		LeaseExpiresAt:  oldExpiry,
+	}
+
+	if err := repo.Register(t.Context(), w); err != nil {
+		t.Fatalf("register worker: %v", err)
+	}
+
+	// Имитируем регистрацию, срок которой уже истёк.
+	seenAt := time.Now().UTC().Truncate(time.Microsecond)
+	newExpiry := seenAt.Add(30 * time.Second)
+
+	if err := repo.ExtendLease(t.Context(), workerID, newExpiry, seenAt); err != nil {
+		t.Fatalf("ExtendLease() error = %v", err)
+	}
+
+	var (
+		gotLastSeenAt sql.NullTime
+		gotExpiry     time.Time
+		gotRegistered time.Time
+		gotTokenHash  string
+	)
+
+	err = db.QueryRow(
+		t.Context(),
+		`SELECT last_seen_at, lease_expires_at, registered_at, token_hash
+		 FROM workers WHERE id = $1`,
+		workerID,
+	).Scan(&gotLastSeenAt, &gotExpiry, &gotRegistered, &gotTokenHash)
+	if err != nil {
+		t.Fatalf("read worker after heartbeat: %v", err)
+	}
+
+	if !gotLastSeenAt.Valid {
+		t.Fatal("last_seen_at is NULL after successful heartbeat")
+	}
+	if !gotLastSeenAt.Time.Equal(seenAt) {
+		t.Fatalf("last_seen_at = %v, want %v", gotLastSeenAt.Time, seenAt)
+	}
+	if !gotExpiry.Equal(newExpiry) {
+		t.Fatalf("lease_expires_at = %v, want %v", gotExpiry, newExpiry)
+	}
+
+	// Heartbeat продлевает регистрацию, но не перерегистрирует воркера.
+	if !gotRegistered.Equal(registeredAt) {
+		t.Fatalf("registered_at = %v, want unchanged %v", gotRegistered, registeredAt)
+	}
+	if gotTokenHash != w.TokenHash {
+		t.Fatalf("token_hash = %q, want unchanged %q", gotTokenHash, w.TokenHash)
+	}
+}
+
+func TestWorkerRepository_ExtendLeaseReturnsNotFound(t *testing.T) {
+	db, err := testutil.OpenPostgres(t, true)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+
+	repo := NewWorkerRepository(db)
+
+	err = repo.ExtendLease(
+		t.Context(),
+		uuid.New(),
+		time.Now().Add(30*time.Second),
+		time.Now(),
+	)
+
+	if !errors.Is(err, worker.ErrWorkerNotFound) {
+		t.Fatalf(
+			"ExtendLease() error = %v, want worker.ErrWorkerNotFound",
+			err,
+		)
+	}
+}

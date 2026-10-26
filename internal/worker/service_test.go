@@ -18,6 +18,10 @@ type workerRepositoryStub struct {
 	worker Worker
 	err    error
 	calls  int
+
+	extendedWorkerID uuid.UUID
+	leaseExpiresAt   time.Time
+	lastSeenAt       time.Time
 }
 
 func (r *workerRepositoryStub) Register(_ context.Context, w Worker) error {
@@ -26,8 +30,11 @@ func (r *workerRepositoryStub) Register(_ context.Context, w Worker) error {
 	return r.err
 }
 
-func (r *workerRepositoryStub) ExtendLease(ctx context.Context, id uuid.UUID, newLeaseEndTime time.Time, seenAt time.Time) error {
+func (r *workerRepositoryStub) ExtendLease(ctx context.Context, id uuid.UUID, leaseExpiresAt time.Time, seenAt time.Time) error {
 	r.calls++
+	r.extendedWorkerID = id
+	r.leaseExpiresAt = leaseExpiresAt
+	r.lastSeenAt = seenAt
 	return r.err
 }
 
@@ -297,6 +304,134 @@ func TestService_Register(t *testing.T) {
 
 		if !errors.Is(err, repositoryErr) {
 			t.Fatalf("Register() error = %v, want wrapped repository error", err)
+		}
+
+		if repo.calls != 1 {
+			t.Fatalf("repository calls = %d, want 1", repo.calls)
+		}
+	})
+}
+
+func TestService_ExtendLease(t *testing.T) {
+	workerID := uuid.New()
+
+	t.Run("extends registration lease", func(t *testing.T) {
+		repo := &workerRepositoryStub{}
+		service := newWorkerService(repo, &bootstrapSettingsStub{})
+
+		ctx := WithID(context.Background(), workerID)
+		before := time.Now()
+
+		got, err := service.ExtendLease(ctx, HeartbeatRequestDTO{
+			WorkerID: workerID,
+		})
+		after := time.Now()
+
+		if err != nil {
+			t.Fatalf("ExtendLease() error = %v", err)
+		}
+
+		if got.WorkerID != workerID {
+			t.Fatalf("WorkerID = %s, want %s", got.WorkerID, workerID)
+		}
+
+		if got.LeaseExpiresAt.Before(before.Add(LeaseSeconds*time.Second)) ||
+			got.LeaseExpiresAt.After(after.Add(LeaseSeconds*time.Second)) {
+			t.Fatalf(
+				"LeaseExpiresAt = %v, want approximately now + %d seconds",
+				got.LeaseExpiresAt,
+				LeaseSeconds,
+			)
+		}
+
+		if repo.calls != 1 {
+			t.Fatalf("repository calls = %d, want 1", repo.calls)
+		}
+
+		if repo.extendedWorkerID != workerID {
+			t.Fatalf(
+				"repository worker ID = %s, want %s",
+				repo.extendedWorkerID,
+				workerID,
+			)
+		}
+
+		if repo.lastSeenAt.Before(before) || repo.lastSeenAt.After(after) {
+			t.Fatalf("last_seen_at = %v, want timestamp within service call", repo.lastSeenAt)
+		}
+
+		if !repo.leaseExpiresAt.Equal(got.LeaseExpiresAt) {
+			t.Fatalf(
+				"repository lease expiry = %v, response expiry = %v",
+				repo.leaseExpiresAt,
+				got.LeaseExpiresAt,
+			)
+		}
+	})
+
+	t.Run("rejects nil worker ID", func(t *testing.T) {
+		repo := &workerRepositoryStub{}
+		service := newWorkerService(repo, &bootstrapSettingsStub{})
+
+		ctx := WithID(context.Background(), workerID)
+		_, err := service.ExtendLease(ctx, HeartbeatRequestDTO{})
+
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("ExtendLease() error = %v, want ErrInvalidInput", err)
+		}
+
+		if repo.calls != 0 {
+			t.Fatalf("repository calls = %d, want 0", repo.calls)
+		}
+	})
+
+	t.Run("rejects worker ID different from authenticated worker", func(t *testing.T) {
+		repo := &workerRepositoryStub{}
+		service := newWorkerService(repo, &bootstrapSettingsStub{})
+
+		ctx := WithID(context.Background(), workerID)
+		_, err := service.ExtendLease(ctx, HeartbeatRequestDTO{
+			WorkerID: uuid.New(),
+		})
+
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("ExtendLease() error = %v, want ErrInvalidInput", err)
+		}
+
+		if repo.calls != 0 {
+			t.Fatalf("repository calls = %d, want 0", repo.calls)
+		}
+	})
+
+	t.Run("rejects missing authenticated worker ID", func(t *testing.T) {
+		repo := &workerRepositoryStub{}
+		service := newWorkerService(repo, &bootstrapSettingsStub{})
+
+		_, err := service.ExtendLease(context.Background(), HeartbeatRequestDTO{
+			WorkerID: workerID,
+		})
+
+		if !errors.Is(err, ErrMissingWorkerID) {
+			t.Fatalf("ExtendLease() error = %v, want ErrMissingWorkerID", err)
+		}
+
+		if repo.calls != 0 {
+			t.Fatalf("repository calls = %d, want 0", repo.calls)
+		}
+	})
+
+	t.Run("propagates repository error", func(t *testing.T) {
+		repositoryErr := errors.New("database unavailable")
+		repo := &workerRepositoryStub{err: repositoryErr}
+		service := newWorkerService(repo, &bootstrapSettingsStub{})
+
+		ctx := WithID(context.Background(), workerID)
+		_, err := service.ExtendLease(ctx, HeartbeatRequestDTO{
+			WorkerID: workerID,
+		})
+
+		if !errors.Is(err, repositoryErr) {
+			t.Fatalf("ExtendLease() error = %v, want wrapped repository error", err)
 		}
 
 		if repo.calls != 1 {

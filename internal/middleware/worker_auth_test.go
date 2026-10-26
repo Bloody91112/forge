@@ -17,15 +17,13 @@ import (
 )
 
 type workerAuthRepositoryStub struct {
-	err   error
-	calls int
-	hash  string
+	err      error
+	calls    int
+	hash     string
+	workerID uuid.UUID
 }
 
-func (r *workerAuthRepositoryStub) GetWorkerByTokenHash(
-	_ context.Context,
-	hash string,
-) (worker.Worker, error) {
+func (r *workerAuthRepositoryStub) GetWorkerByTokenHash(ctx context.Context, hash string) (worker.Worker, error) {
 	r.calls++
 	r.hash = hash
 
@@ -33,7 +31,7 @@ func (r *workerAuthRepositoryStub) GetWorkerByTokenHash(
 		return worker.Worker{}, r.err
 	}
 
-	return worker.Worker{ID: uuid.New()}, nil
+	return worker.Worker{ID: r.workerID}, nil
 }
 
 func TestWorkerAuth(t *testing.T) {
@@ -86,12 +84,19 @@ func TestWorkerAuth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo := &workerAuthRepositoryStub{err: tt.repositoryErr}
+			authenticatedWorkerID := uuid.New()
+			repo := &workerAuthRepositoryStub{
+				err:      tt.repositoryErr,
+				workerID: authenticatedWorkerID,
+			}
 			authService := auth.NewWorkerService(repo)
 
 			nextCalled := false
-			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			var contextWorkerID uuid.UUID
+
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				nextCalled = true
+				contextWorkerID, _ = worker.IDFromContext(r.Context())
 				w.WriteHeader(http.StatusNoContent)
 			})
 
@@ -116,6 +121,14 @@ func TestWorkerAuth(t *testing.T) {
 
 			if nextCalled != tt.wantNext {
 				t.Fatalf("next called = %v, want %v", nextCalled, tt.wantNext)
+			}
+
+			if tt.wantNext && contextWorkerID != authenticatedWorkerID {
+				t.Fatalf(
+					"worker ID in context = %s, want authenticated worker ID %s",
+					contextWorkerID,
+					authenticatedWorkerID,
+				)
 			}
 
 			if repo.calls != tt.wantRepoCalls {
