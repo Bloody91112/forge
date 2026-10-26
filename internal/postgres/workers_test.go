@@ -3,6 +3,9 @@ package postgres
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"forge/internal/auth"
+	"forge/internal/token"
 	"testing"
 	"time"
 
@@ -160,5 +163,72 @@ func TestWorkerRepository_RegisterAndReplaceExistingWorker(t *testing.T) {
 	}
 	if rowCount != 1 {
 		t.Fatalf("worker rows = %d, want 1", rowCount)
+	}
+}
+
+func TestWorkerRepository_GetWorkerByTokenHash(t *testing.T) {
+	db, err := testutil.OpenPostgres(t, true)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+
+	repo := NewWorkerRepository(db)
+
+	const workerToken = "worker-secret"
+	registeredAt := time.Now().UTC().Truncate(time.Microsecond)
+
+	want := worker.Worker{
+		ID:              uuid.New(),
+		TokenHash:       token.HashToken(workerToken),
+		ProtocolVersion: "1",
+		Capabilities:    []string{"email", "webhook"},
+		RegisteredAt:    registeredAt,
+		LeaseExpiresAt:  registeredAt.Add(30 * time.Second),
+	}
+
+	if err := repo.Register(t.Context(), want); err != nil {
+		t.Fatalf("register worker: %v", err)
+	}
+
+	got, err := repo.GetWorkerByTokenHash(t.Context(), token.HashToken(workerToken))
+	if err != nil {
+		t.Fatalf("GetWorkerByTokenHash() error = %v", err)
+	}
+
+	if got.ID != want.ID {
+		t.Errorf("worker ID = %s, want %s", got.ID, want.ID)
+	}
+	if got.TokenHash != want.TokenHash {
+		t.Errorf("token hash = %q, want %q", got.TokenHash, want.TokenHash)
+	}
+	if got.ProtocolVersion != want.ProtocolVersion {
+		t.Errorf("protocol version = %q, want %q", got.ProtocolVersion, want.ProtocolVersion)
+	}
+	if !got.RegisteredAt.Equal(want.RegisteredAt) {
+		t.Errorf("registered_at = %v, want %v", got.RegisteredAt, want.RegisteredAt)
+	}
+	if !got.LeaseExpiresAt.Equal(want.LeaseExpiresAt) {
+		t.Errorf("lease_expires_at = %v, want %v", got.LeaseExpiresAt, want.LeaseExpiresAt)
+	}
+	if got.LastSeenAt != nil {
+		t.Errorf("last_seen_at = %v, want nil", got.LastSeenAt)
+	}
+
+	if len(got.Capabilities) != len(want.Capabilities) {
+		t.Fatalf("capabilities = %v, want %v", got.Capabilities, want.Capabilities)
+	}
+	for i := range want.Capabilities {
+		if got.Capabilities[i] != want.Capabilities[i] {
+			t.Errorf("capabilities = %v, want %v", got.Capabilities, want.Capabilities)
+			break
+		}
+	}
+
+	_, err = repo.GetWorkerByTokenHash(t.Context(), token.HashToken("unknown-token"))
+	if !errors.Is(err, auth.ErrWorkerNotFound) {
+		t.Fatalf(
+			"GetWorkerByTokenHash() error = %v, want errors.Is(_, auth.ErrWorkerNotFound)",
+			err,
+		)
 	}
 }
