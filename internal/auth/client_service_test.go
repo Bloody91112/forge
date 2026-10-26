@@ -65,7 +65,7 @@ func TestService_VerifyClientByToken(t *testing.T) {
 			}
 
 			repo := ClientRepositoryStub{client, tt.wantErr}
-			service := NewService(&repo)
+			service := NewClientService(&repo)
 			id, serviceErr := service.VerifyClientByToken(req)
 
 			if !errors.Is(serviceErr, tt.wantErr) {

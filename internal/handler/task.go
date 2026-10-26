@@ -2,20 +2,18 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"forge/internal/httpresponse"
 	"forge/internal/task"
-	"io"
 	"log"
-	"mime"
 	"net/http"
 
 	"github.com/google/uuid"
 )
 
 type TaskHandler struct {
-	service TaskService
+	service     TaskService
+	baseHandler BaseHandler
 }
 
 type TaskService interface {
@@ -24,19 +22,14 @@ type TaskService interface {
 }
 
 func NewTaskHandler(service TaskService) *TaskHandler {
-	return &TaskHandler{service: service}
+	return &TaskHandler{
+		service:     service,
+		baseHandler: BaseHandler{},
+	}
 }
 
 func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-
-	if err != nil {
-		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeMediaTypeParseError, "Failed to parse media type")
-		return
-	}
-
-	if mediaType != "application/json" {
-		httpresponse.ResponseError(w, http.StatusUnsupportedMediaType, httpresponse.ErrCodeMediaTypeError, "JSON content-type required")
+	if !h.baseHandler.CheckJSONContentType(w, r) {
 		return
 	}
 
@@ -46,25 +39,9 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-
 	var taskInput task.CreateTaskInput
-	decoder := json.NewDecoder(r.Body)
 
-	if err := decoder.Decode(&taskInput); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			httpresponse.ResponseError(w, http.StatusRequestEntityTooLarge, httpresponse.ErrCodeRequestBodyLimit, "Request body too large. Limit is 1MB")
-			return
-		}
-
-		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidJSONPayload, "Invalid JSON payload")
-		return
-	}
-
-	// check and reject additional json objects
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidJSONPayload, "Invalid JSON payload: expected a single JSON value")
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, taskInput, 1<<20) {
 		return
 	}
 
@@ -93,16 +70,12 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-
-	if err := json.NewEncoder(w).Encode(newCreateTaskResponse(createdTask)); err != nil {
-		log.Printf("failed to encode created task: %v", err)
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusCreated, "created task", createdTask); err != nil {
+		log.Print(err)
 	}
 }
 
 func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
-
 	id, err := uuid.Parse(r.PathValue("id"))
 
 	if err != nil {
@@ -129,10 +102,7 @@ func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(newGetTaskResponse(gotTask)); err != nil {
-		log.Printf("failed to encode task: %v", err)
-		return
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusOK, "got task", newGetTaskResponse(gotTask)); err != nil {
+		log.Print(err)
 	}
 }

@@ -75,7 +75,7 @@ func runServer() error {
 	taskHandler := handler.NewTaskHandler(taskService)
 
 	clientRepository := postgres.NewClientRepository(dbPool)
-	authService := auth.NewService(clientRepository)
+	authService := auth.NewClientService(clientRepository)
 
 	settingsRepo := postgres.NewSettingRepository(dbPool)
 	settingsService := settings.NewService(settingsRepo)
@@ -84,16 +84,24 @@ func runServer() error {
 	workerRepo := postgres.NewWorkerRepository(dbPool)
 	workerService := worker.NewService(workerRepo, bootstrapService)
 	workerHandler := handler.NewWorkerHandler(workerService)
+	workerAuthService := auth.NewWorkerService(workerRepo)
 
+	// public
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Check)
 	mux.HandleFunc("GET /readyz", readiness.Check)
 	mux.HandleFunc("POST /internal/v1/workers/register", workerHandler.Register)
 
+	// workers
+	workerMux := http.NewServeMux()
+	workerMux.HandleFunc("POST /internal/v1/workers/heartbeat", workerHandler.Heartbeat)
+
+	mux.Handle("/internal/v1/", middleware.WorkerAuth(workerAuthService, workerMux))
+
+	// clients
 	clientMux := http.NewServeMux()
 	clientMux.HandleFunc("POST /api/v1/tasks", taskHandler.CreateTask)
 	clientMux.HandleFunc("GET /api/v1/tasks/{id}", taskHandler.GetTask)
-
 	mux.Handle("/api/v1/", middleware.Auth(authService, clientMux))
 
 	server := &http.Server{

@@ -2,23 +2,24 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"forge/internal/httpresponse"
 	"forge/internal/token"
 	"forge/internal/worker"
-	"io"
 	"log"
-	"mime"
 	"net/http"
 )
 
 type WorkerHandler struct {
-	service WorkerService
+	baseHandler BaseHandler
+	service     WorkerService
 }
 
 func NewWorkerHandler(service WorkerService) *WorkerHandler {
-	return &WorkerHandler{service: service}
+	return &WorkerHandler{
+		baseHandler: BaseHandler{},
+		service:     service,
+	}
 }
 
 type WorkerService interface {
@@ -26,15 +27,7 @@ type WorkerService interface {
 }
 
 func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-
-	if err != nil {
-		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeMediaTypeParseError, "Failed to parse media type")
-		return
-	}
-
-	if mediaType != "application/json" {
-		httpresponse.ResponseError(w, http.StatusUnsupportedMediaType, httpresponse.ErrCodeMediaTypeError, "JSON content-type required")
+	if !h.baseHandler.CheckJSONContentType(w, r) {
 		return
 	}
 
@@ -44,24 +37,8 @@ func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-
 	var input worker.RegisterWorkerInput
-	decoder := json.NewDecoder(r.Body)
-
-	if err := decoder.Decode(&input); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			httpresponse.ResponseError(w, http.StatusRequestEntityTooLarge, httpresponse.ErrCodeRequestBodyLimit, "Request body too large. Limit is 1MB")
-			return
-		}
-
-		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidJSONPayload, "Invalid JSON payload")
-		return
-	}
-
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidJSONPayload, "Invalid JSON payload: expected a single JSON value")
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, input, 1<<20) {
 		return
 	}
 
@@ -88,9 +65,9 @@ func (h *WorkerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(output); err != nil {
-		log.Printf("failed to encode registered worker: %v", err)
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusOK, "registered worker", output); err != nil {
+		log.Print(err)
 	}
 }
+
+func (h *WorkerHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {}

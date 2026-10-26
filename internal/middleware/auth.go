@@ -10,7 +10,7 @@ import (
 	"net/http"
 )
 
-func Auth(authService *auth.Service, next http.Handler) http.Handler {
+func Auth(authService *auth.ClientService, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientID, err := authService.VerifyClientByToken(r)
 		if err != nil {

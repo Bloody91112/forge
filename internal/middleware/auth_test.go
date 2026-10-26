@@ -101,7 +101,7 @@ func TestAuth(t *testing.T) {
 			}
 
 			repo := ClientRepositoryStub{client: client, err: tt.repoErr}
-			authService := auth.NewService(&repo)
+			authService := auth.NewClientService(&repo)
 			middleware := Auth(authService, handler)
 
 			middleware.ServeHTTP(rr, req)

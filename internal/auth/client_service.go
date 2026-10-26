@@ -11,19 +11,19 @@ import (
 
 var ErrClientNotFound = errors.New("client not found")
 
-type Repository interface {
+type ClientRepository interface {
 	GetClientByTokenHash(ctx context.Context, hash string) (Client, error)
 }
 
-type Service struct {
-	repo Repository
+type ClientService struct {
+	repo ClientRepository
 }
 
-func NewService(repo Repository) *Service {
-	return &Service{repo: repo}
+func NewClientService(repo ClientRepository) *ClientService {
+	return &ClientService{repo: repo}
 }
 
-func (s *Service) VerifyClientByToken(r *http.Request) (uuid.UUID, error) {
+func (s *ClientService) VerifyClientByToken(r *http.Request) (uuid.UUID, error) {
 	clientToken, err := token.ExtractBearerToken(r)
 	if err != nil {
 		return uuid.Nil, err
