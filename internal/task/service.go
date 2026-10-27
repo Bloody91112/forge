@@ -18,8 +18,13 @@ var (
 	ErrIdempotencyConflict = errors.New("idempotency key conflict")
 )
 
-const DefaultTaskMaxAttempts = 5
-const DefaultTaskTimeout = 300
+const (
+	DefaultTaskMaxAttempts = 5
+	DefaultTaskTimeout     = 300
+	MaxTaskAttempts        = 10
+	MaxTaskTimeout         = 3600
+	MaxPayloadSize         = 1 << 20 // 1 MiB
+)
 
 type contextKey string
 
@@ -77,8 +82,18 @@ func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error)
 		return Task{}, fmt.Errorf("idempotency key required, got empty string: %w", ErrInvalidInput)
 	}
 
-	if !json.Valid(dto.Payload) {
-		return Task{}, fmt.Errorf("payload must be valid JSON: %w", ErrInvalidInput)
+	payload := bytes.TrimSpace(dto.Payload)
+
+	if len(payload) == 0 || len(payload) > MaxPayloadSize {
+		return Task{}, fmt.Errorf(
+			"payload must be between 1 byte and %d bytes: %w",
+			MaxPayloadSize,
+			ErrInvalidInput,
+		)
+	}
+
+	if !json.Valid(payload) || payload[0] != '{' {
+		return Task{}, fmt.Errorf("payload must be a JSON object: %w", ErrInvalidInput)
 	}
 
 	hashStr, err := calculateRequestHash(dto.Payload, dto.Type, timeoutSeconds, maxAttempts)
