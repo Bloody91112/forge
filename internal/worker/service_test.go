@@ -15,10 +15,9 @@ import (
 )
 
 type workerRepositoryStub struct {
-	worker Worker
-	err    error
-	calls  int
-
+	worker           Worker
+	err              error
+	calls            int
 	extendedWorkerID uuid.UUID
 	leaseExpiresAt   time.Time
 	lastSeenAt       time.Time
@@ -30,7 +29,12 @@ func (r *workerRepositoryStub) Register(_ context.Context, w Worker) error {
 	return r.err
 }
 
-func (r *workerRepositoryStub) ExtendLease(ctx context.Context, id uuid.UUID, leaseExpiresAt time.Time, seenAt time.Time) error {
+func (r *workerRepositoryStub) ExtendLease(
+	_ context.Context,
+	id uuid.UUID,
+	leaseExpiresAt time.Time,
+	seenAt time.Time,
+) error {
 	r.calls++
 	r.extendedWorkerID = id
 	r.leaseExpiresAt = leaseExpiresAt
@@ -44,20 +48,26 @@ type bootstrapSettingsStub struct {
 	getCalls int
 }
 
-func (s *bootstrapSettingsStub) GetSettingValue(ctx context.Context, key string) (string, error) {
+func (s *bootstrapSettingsStub) GetSettingValue(
+	_ context.Context,
+	_ string,
+) (string, error) {
 	s.getCalls++
 	return s.value, s.getErr
 }
 
-func (*bootstrapSettingsStub) CreateSetting(ctx context.Context, key string, value string) error {
+func (*bootstrapSettingsStub) CreateSetting(context.Context, string, string) error {
 	return nil
 }
 
-func (*bootstrapSettingsStub) UpdateSettingValue(ctx context.Context, key string, value string) error {
+func (*bootstrapSettingsStub) UpdateSettingValue(context.Context, string, string) error {
 	return nil
 }
 
-func newWorkerService(repo *workerRepositoryStub, settings *bootstrapSettingsStub) *Service {
+func newWorkerService(
+	repo *workerRepositoryStub,
+	settings *bootstrapSettingsStub,
+) *Service {
 	return NewService(repo, bootstrap.NewService(settings))
 }
 
@@ -69,13 +79,31 @@ func validRegisterInput() RegisterRequestDTO {
 	}
 }
 
+func assertRepositoryCalls(t *testing.T, repo *workerRepositoryStub, want int) {
+	t.Helper()
+
+	if repo.calls != want {
+		t.Fatalf("repository calls = %d, want %d", repo.calls, want)
+	}
+}
+
+func assertErrorIs(t *testing.T, err, want error) {
+	t.Helper()
+
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want errors.Is(_, %v)", err, want)
+	}
+}
+
 func TestService_Register(t *testing.T) {
 	ctx := context.Background()
 	const bootstrapToken = "bootstrap-secret"
 
 	t.Run("registers worker and stores only token hash", func(t *testing.T) {
 		repo := &workerRepositoryStub{}
-		settings := &bootstrapSettingsStub{value: token.HashToken(bootstrapToken)}
+		settings := &bootstrapSettingsStub{
+			value: token.HashToken(bootstrapToken),
+		}
 		service := newWorkerService(repo, settings)
 		input := validRegisterInput()
 
@@ -87,40 +115,32 @@ func TestService_Register(t *testing.T) {
 			t.Fatalf("Register() error = %v", err)
 		}
 
-		if repo.calls != 1 {
-			t.Fatalf("repository calls = %d, want 1", repo.calls)
-		}
+		assertRepositoryCalls(t, repo, 1)
 
 		if got.ID != input.ID {
-			t.Fatalf("output ID = %s, want %s", got.ID, input.ID)
+			t.Errorf("response ID = %s, want %s", got.ID, input.ID)
 		}
-
 		if got.Token == "" {
-			t.Fatal("worker token is empty")
+			t.Fatal("response token is empty")
 		}
-
 		if len(got.Token) != 64 {
-			t.Fatalf("worker token length = %d, want 64 hex characters", len(got.Token))
+			t.Errorf("token length = %d, want 64", len(got.Token))
 		}
-
 		if got.Token == bootstrapToken {
-			t.Fatal("worker token must differ from bootstrap token")
+			t.Error("worker token must differ from bootstrap token")
 		}
 
-		if repo.worker.TokenHash != token.HashToken(got.Token) {
-			t.Fatal("repository did not receive the hash of the returned worker token")
+		if want := token.HashToken(got.Token); repo.worker.TokenHash != want {
+			t.Error("repository did not receive the hash of the worker token")
 		}
-
 		if repo.worker.TokenHash == got.Token {
-			t.Fatal("repository received the plaintext worker token")
+			t.Error("repository received the plaintext worker token")
 		}
-
 		if repo.worker.ID != input.ID {
-			t.Fatalf("stored worker ID = %s, want %s", repo.worker.ID, input.ID)
+			t.Errorf("stored worker ID = %s, want %s", repo.worker.ID, input.ID)
 		}
-
 		if repo.worker.ProtocolVersion != RequiredProtocolVersion {
-			t.Fatalf(
+			t.Errorf(
 				"stored protocol version = %q, want %q",
 				repo.worker.ProtocolVersion,
 				RequiredProtocolVersion,
@@ -128,23 +148,24 @@ func TestService_Register(t *testing.T) {
 		}
 
 		if diff := cmp.Diff([]string{"email", "webhook"}, repo.worker.Capabilities); diff != "" {
-			t.Fatalf("stored capabilities mismatch (-want +got):\n%s", diff)
+			t.Errorf("capabilities mismatch (-want +got):\n%s", diff)
 		}
 
 		if repo.worker.RegisteredAt.Before(before) || repo.worker.RegisteredAt.After(after) {
-			t.Fatalf("RegisteredAt %v is outside the registration interval", repo.worker.RegisteredAt)
+			t.Errorf("RegisteredAt = %v, outside registration interval", repo.worker.RegisteredAt)
 		}
 
-		if got.LeaseExpiresAt != repo.worker.LeaseExpiresAt {
-			t.Fatal("output lease expiry differs from stored lease expiry")
+		if !got.LeaseExpiresAt.Equal(repo.worker.LeaseExpiresAt) {
+			t.Error("response lease expiry differs from stored lease expiry")
 		}
 
-		if want := repo.worker.RegisteredAt.Add(LeaseSeconds * time.Second); !repo.worker.LeaseExpiresAt.Equal(want) {
-			t.Fatalf("lease expiry = %v, want %v", repo.worker.LeaseExpiresAt, want)
+		wantExpiry := repo.worker.RegisteredAt.Add(LeaseSeconds * time.Second)
+		if !repo.worker.LeaseExpiresAt.Equal(wantExpiry) {
+			t.Errorf("lease expiry = %v, want %v", repo.worker.LeaseExpiresAt, wantExpiry)
 		}
 
 		if repo.worker.LastSeenAt != nil {
-			t.Fatal("LastSeenAt must be nil for a newly registered worker")
+			t.Errorf("LastSeenAt = %v, want nil", repo.worker.LastSeenAt)
 		}
 	})
 
@@ -157,7 +178,6 @@ func TestService_Register(t *testing.T) {
 		}{
 			{
 				name:      "empty bootstrap token",
-				token:     "",
 				input:     validRegisterInput(),
 				wantError: ErrInvalidInput,
 			},
@@ -242,16 +262,11 @@ func TestService_Register(t *testing.T) {
 
 				_, err := service.Register(ctx, tt.token, tt.input)
 
-				if !errors.Is(err, tt.wantError) {
-					t.Fatalf("Register() error = %v, want errors.Is(_, %v)", err, tt.wantError)
-				}
-
-				if repo.calls != 0 {
-					t.Fatalf("repository calls = %d, want 0", repo.calls)
-				}
+				assertErrorIs(t, err, tt.wantError)
+				assertRepositoryCalls(t, repo, 0)
 
 				if settings.getCalls != 0 {
-					t.Fatalf("bootstrap storage reads = %d, want 0", settings.getCalls)
+					t.Errorf("bootstrap storage reads = %d, want 0", settings.getCalls)
 				}
 			})
 		}
@@ -266,13 +281,8 @@ func TestService_Register(t *testing.T) {
 
 		_, err := service.Register(ctx, bootstrapToken, validRegisterInput())
 
-		if !errors.Is(err, ErrInvalidBootstrapToken) {
-			t.Fatalf("Register() error = %v, want ErrInvalidBootstrapToken", err)
-		}
-
-		if repo.calls != 0 {
-			t.Fatalf("repository calls = %d, want 0", repo.calls)
-		}
+		assertErrorIs(t, err, ErrInvalidBootstrapToken)
+		assertRepositoryCalls(t, repo, 0)
 	})
 
 	t.Run("propagates bootstrap storage error", func(t *testing.T) {
@@ -283,13 +293,8 @@ func TestService_Register(t *testing.T) {
 
 		_, err := service.Register(ctx, bootstrapToken, validRegisterInput())
 
-		if !errors.Is(err, storageErr) {
-			t.Fatalf("Register() error = %v, want wrapped storage error", err)
-		}
-
-		if repo.calls != 0 {
-			t.Fatalf("repository calls = %d, want 0", repo.calls)
-		}
+		assertErrorIs(t, err, storageErr)
+		assertRepositoryCalls(t, repo, 0)
 	})
 
 	t.Run("propagates repository error", func(t *testing.T) {
@@ -302,13 +307,8 @@ func TestService_Register(t *testing.T) {
 
 		_, err := service.Register(ctx, bootstrapToken, validRegisterInput())
 
-		if !errors.Is(err, repositoryErr) {
-			t.Fatalf("Register() error = %v, want wrapped repository error", err)
-		}
-
-		if repo.calls != 1 {
-			t.Fatalf("repository calls = %d, want 1", repo.calls)
-		}
+		assertErrorIs(t, err, repositoryErr)
+		assertRepositoryCalls(t, repo, 1)
 	})
 }
 
@@ -332,36 +332,25 @@ func TestService_ExtendLease(t *testing.T) {
 		}
 
 		if got.WorkerID != workerID {
-			t.Fatalf("WorkerID = %s, want %s", got.WorkerID, workerID)
+			t.Errorf("response WorkerID = %s, want %s", got.WorkerID, workerID)
 		}
 
-		if got.LeaseExpiresAt.Before(before.Add(LeaseSeconds*time.Second)) ||
-			got.LeaseExpiresAt.After(after.Add(LeaseSeconds*time.Second)) {
-			t.Fatalf(
-				"LeaseExpiresAt = %v, want approximately now + %d seconds",
-				got.LeaseExpiresAt,
-				LeaseSeconds,
-			)
+		minExpiry := before.Add(LeaseSeconds * time.Second)
+		maxExpiry := after.Add(LeaseSeconds * time.Second)
+		if got.LeaseExpiresAt.Before(minExpiry) || got.LeaseExpiresAt.After(maxExpiry) {
+			t.Errorf("LeaseExpiresAt = %v, want between %v and %v", got.LeaseExpiresAt, minExpiry, maxExpiry)
 		}
 
-		if repo.calls != 1 {
-			t.Fatalf("repository calls = %d, want 1", repo.calls)
-		}
+		assertRepositoryCalls(t, repo, 1)
 
 		if repo.extendedWorkerID != workerID {
-			t.Fatalf(
-				"repository worker ID = %s, want %s",
-				repo.extendedWorkerID,
-				workerID,
-			)
+			t.Errorf("repository worker ID = %s, want %s", repo.extendedWorkerID, workerID)
 		}
-
 		if repo.lastSeenAt.Before(before) || repo.lastSeenAt.After(after) {
-			t.Fatalf("last_seen_at = %v, want timestamp within service call", repo.lastSeenAt)
+			t.Errorf("last_seen_at = %v, outside service call interval", repo.lastSeenAt)
 		}
-
 		if !repo.leaseExpiresAt.Equal(got.LeaseExpiresAt) {
-			t.Fatalf(
+			t.Errorf(
 				"repository lease expiry = %v, response expiry = %v",
 				repo.leaseExpiresAt,
 				got.LeaseExpiresAt,
@@ -376,13 +365,8 @@ func TestService_ExtendLease(t *testing.T) {
 		ctx := WithID(context.Background(), workerID)
 		_, err := service.ExtendLease(ctx, HeartbeatRequestDTO{})
 
-		if !errors.Is(err, ErrInvalidInput) {
-			t.Fatalf("ExtendLease() error = %v, want ErrInvalidInput", err)
-		}
-
-		if repo.calls != 0 {
-			t.Fatalf("repository calls = %d, want 0", repo.calls)
-		}
+		assertErrorIs(t, err, ErrInvalidInput)
+		assertRepositoryCalls(t, repo, 0)
 	})
 
 	t.Run("rejects worker ID different from authenticated worker", func(t *testing.T) {
@@ -394,13 +378,8 @@ func TestService_ExtendLease(t *testing.T) {
 			WorkerID: uuid.New(),
 		})
 
-		if !errors.Is(err, ErrInvalidInput) {
-			t.Fatalf("ExtendLease() error = %v, want ErrInvalidInput", err)
-		}
-
-		if repo.calls != 0 {
-			t.Fatalf("repository calls = %d, want 0", repo.calls)
-		}
+		assertErrorIs(t, err, ErrInvalidInput)
+		assertRepositoryCalls(t, repo, 0)
 	})
 
 	t.Run("rejects missing authenticated worker ID", func(t *testing.T) {
@@ -411,13 +390,8 @@ func TestService_ExtendLease(t *testing.T) {
 			WorkerID: workerID,
 		})
 
-		if !errors.Is(err, ErrMissingWorkerID) {
-			t.Fatalf("ExtendLease() error = %v, want ErrMissingWorkerID", err)
-		}
-
-		if repo.calls != 0 {
-			t.Fatalf("repository calls = %d, want 0", repo.calls)
-		}
+		assertErrorIs(t, err, ErrMissingWorkerID)
+		assertRepositoryCalls(t, repo, 0)
 	})
 
 	t.Run("propagates repository error", func(t *testing.T) {
@@ -430,12 +404,7 @@ func TestService_ExtendLease(t *testing.T) {
 			WorkerID: workerID,
 		})
 
-		if !errors.Is(err, repositoryErr) {
-			t.Fatalf("ExtendLease() error = %v, want wrapped repository error", err)
-		}
-
-		if repo.calls != 1 {
-			t.Fatalf("repository calls = %d, want 1", repo.calls)
-		}
+		assertErrorIs(t, err, repositoryErr)
+		assertRepositoryCalls(t, repo, 1)
 	})
 }

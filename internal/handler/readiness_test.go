@@ -48,10 +48,13 @@ func TestReadinessHandler_Check(t *testing.T) {
 				handler.SetNotReady()
 			}
 
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /readyz", handler.Check)
+
 			req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 			recorder := httptest.NewRecorder()
 
-			handler.Check(recorder, req)
+			mux.ServeHTTP(recorder, req)
 
 			if recorder.Code != tt.wantHTTPStatus {
 				t.Errorf(

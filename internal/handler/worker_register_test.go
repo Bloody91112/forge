@@ -260,5 +260,5 @@ func TestWorkerHandler_RegisterSuccess(t *testing.T) {
 }
 
 func workerLeaseExpiry() time.Time {
-	return time.Date(2026, time.October, 25, 12, 0, 0, 0, time.UTC)
+	return time.Now().Add(time.Duration(worker.LeaseSeconds) * time.Second)
 }

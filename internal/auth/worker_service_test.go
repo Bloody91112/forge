@@ -3,12 +3,11 @@ package auth
 import (
 	"context"
 	"errors"
+	"forge/internal/token"
+	"forge/internal/worker"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"forge/internal/token"
-	"forge/internal/worker"
 
 	"github.com/google/uuid"
 )
@@ -26,22 +25,27 @@ func (r *workerTokenRepositoryStub) GetWorkerByTokenHash(
 ) (worker.Worker, error) {
 	r.calls++
 	r.hash = hash
+
 	return r.worker, r.err
 }
 
 func TestWorkerService_VerifyWorkerByToken(t *testing.T) {
+	workerToken := "worker-secret"
+	workerID := uuid.New()
 	repositoryErr := errors.New("database unavailable")
 
 	tests := []struct {
 		name          string
 		authHeader    string
 		repositoryErr error
+		wantID        uuid.UUID
 		wantErr       error
 		wantCalls     int
 	}{
 		{
 			name:       "valid token",
-			authHeader: "Bearer worker-secret",
+			authHeader: "Bearer " + workerToken,
+			wantID:     workerID,
 			wantCalls:  1,
 		},
 		{
@@ -51,7 +55,7 @@ func TestWorkerService_VerifyWorkerByToken(t *testing.T) {
 		},
 		{
 			name:       "invalid authorization scheme",
-			authHeader: "Basic worker-secret",
+			authHeader: "Basic " + workerToken,
 			wantErr:    token.ErrInvalidAuthToken,
 			wantCalls:  0,
 		},
@@ -63,14 +67,14 @@ func TestWorkerService_VerifyWorkerByToken(t *testing.T) {
 		},
 		{
 			name:          "worker not found",
-			authHeader:    "Bearer worker-secret",
+			authHeader:    "Bearer " + workerToken,
 			repositoryErr: ErrWorkerNotFound,
 			wantErr:       ErrWorkerNotFound,
 			wantCalls:     1,
 		},
 		{
 			name:          "repository error",
-			authHeader:    "Bearer worker-secret",
+			authHeader:    "Bearer " + workerToken,
 			repositoryErr: repositoryErr,
 			wantErr:       repositoryErr,
 			wantCalls:     1,
@@ -80,7 +84,7 @@ func TestWorkerService_VerifyWorkerByToken(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &workerTokenRepositoryStub{
-				worker: worker.Worker{ID: uuid.New()},
+				worker: worker.Worker{ID: workerID},
 				err:    tt.repositoryErr,
 			}
 			service := NewWorkerService(repo)
@@ -90,23 +94,22 @@ func TestWorkerService_VerifyWorkerByToken(t *testing.T) {
 				req.Header.Set("Authorization", tt.authHeader)
 			}
 
-			workerID, err := service.VerifyWorkerByToken(req)
+			gotID, err := service.VerifyWorkerByToken(req)
 
-			if tt.wantErr == nil {
-				if err != nil {
-					t.Fatalf("VerifyWorkerByToken() error = %v, want nil", err)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf(
+						"VerifyWorkerByToken() error = %v, want errors.Is(_, %v)",
+						err,
+						tt.wantErr,
+					)
 				}
+			} else if err != nil {
+				t.Fatalf("VerifyWorkerByToken() error = %v, want nil", err)
+			}
 
-				if workerID == uuid.Nil {
-					t.Fatal("got nil worker uuid")
-				}
-
-			} else if !errors.Is(err, tt.wantErr) {
-				t.Fatalf(
-					"VerifyWorkerByToken() error = %v, want errors.Is(_, %v)",
-					err,
-					tt.wantErr,
-				)
+			if gotID != tt.wantID {
+				t.Errorf("VerifyWorkerByToken() ID = %s, want %s", gotID, tt.wantID)
 			}
 
 			if repo.calls != tt.wantCalls {
@@ -114,12 +117,12 @@ func TestWorkerService_VerifyWorkerByToken(t *testing.T) {
 			}
 
 			if tt.wantCalls > 0 {
-				if got, want := repo.hash, token.HashToken("worker-secret"); got != want {
-					t.Fatalf("repository hash = %q, want %q", got, want)
+				wantHash := token.HashToken(workerToken)
+				if repo.hash != wantHash {
+					t.Errorf("repository hash = %q, want %q", repo.hash, wantHash)
 				}
-
-				if repo.hash == "worker-secret" {
-					t.Fatal("repository received the plaintext token")
+				if repo.hash == workerToken {
+					t.Error("repository received the plaintext token")
 				}
 			}
 		})

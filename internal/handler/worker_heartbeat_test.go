@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"forge/internal/httpresponse"
+	"forge/internal/worker"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"forge/internal/httpresponse"
-	"forge/internal/worker"
 
 	"github.com/google/uuid"
 )
@@ -42,7 +40,7 @@ func (s *heartbeatServiceStub) ExtendLease(
 
 func TestWorkerHandler_HeartbeatSuccess(t *testing.T) {
 	workerID := uuid.New()
-	expiry := time.Date(2026, time.October, 26, 12, 0, 30, 0, time.UTC)
+	expiry := workerLeaseExpiry()
 
 	want := worker.HeartbeatResponseDTO{
 		WorkerID:       workerID,

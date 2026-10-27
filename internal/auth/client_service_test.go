@@ -7,73 +7,122 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
 
-type ClientRepositoryStub struct {
+type clientRepositoryStub struct {
 	client Client
 	err    error
+	hash   string
+	calls  int
 }
 
-func (r *ClientRepositoryStub) GetClientByTokenHash(ctx context.Context, hash string) (Client, error) {
+func (r *clientRepositoryStub) GetClientByTokenHash(
+	_ context.Context,
+	hash string,
+) (Client, error) {
+	r.calls++
+	r.hash = hash
+
 	return r.client, r.err
 }
 
-func TestService_VerifyClientByToken(t *testing.T) {
-
+func TestClientService_VerifyClientByToken(t *testing.T) {
+	clientToken := "client-secret"
 	clientID := uuid.New()
-	clientToken := uuid.New().String()
+	repositoryErr := errors.New("database unavailable")
 
 	tests := []struct {
-		name       string
-		authHeader string
-		wantID     uuid.UUID
-		wantErr    error
+		name          string
+		authHeader    string
+		repositoryErr error
+		wantID        uuid.UUID
+		wantErr       error
+		wantCalls     int
 	}{
 		{
-			name:       "correct auth header",
+			name:       "valid token",
 			authHeader: "Bearer " + clientToken,
 			wantID:     clientID,
-			wantErr:    nil,
+			wantCalls:  1,
 		},
 		{
-			name:       "bad auth header",
-			authHeader: "Bearer",
-			wantID:     uuid.Nil,
+			name:      "missing authorization header",
+			wantErr:   token.ErrInvalidAuthToken,
+			wantCalls: 0,
+		},
+		{
+			name:       "invalid authorization scheme",
+			authHeader: "Basic " + clientToken,
 			wantErr:    token.ErrInvalidAuthToken,
+			wantCalls:  0,
 		},
 		{
-			name:       "client not found",
-			authHeader: "Bearer " + clientToken,
-			wantID:     uuid.Nil,
-			wantErr:    ErrClientNotFound,
+			name:       "missing bearer token",
+			authHeader: "Bearer",
+			wantErr:    token.ErrInvalidAuthToken,
+			wantCalls:  0,
+		},
+		{
+			name:          "client not found",
+			authHeader:    "Bearer " + clientToken,
+			repositoryErr: ErrClientNotFound,
+			wantErr:       ErrClientNotFound,
+			wantCalls:     1,
+		},
+		{
+			name:          "repository error",
+			authHeader:    "Bearer " + clientToken,
+			repositoryErr: repositoryErr,
+			wantErr:       repositoryErr,
+			wantCalls:     1,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			repo := &clientRepositoryStub{
+				client: Client{ID: clientID},
+				err:    tt.repositoryErr,
+			}
+			service := NewClientService(repo)
+
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			req.Header.Set("Authorization", tt.authHeader)
-
-			client := Client{
-				ID:        tt.wantID,
-				Name:      "BOB",
-				TokenHash: "123",
-				CreatedAt: time.Now(),
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
 			}
 
-			repo := ClientRepositoryStub{client, tt.wantErr}
-			service := NewClientService(&repo)
-			id, serviceErr := service.VerifyClientByToken(req)
+			gotID, err := service.VerifyClientByToken(req)
 
-			if !errors.Is(serviceErr, tt.wantErr) {
-				t.Fatalf("expected err: %v, got: %v", tt.wantErr, serviceErr)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf(
+						"VerifyClientByToken() error = %v, want errors.Is(_, %v)",
+						err,
+						tt.wantErr,
+					)
+				}
+			} else if err != nil {
+				t.Fatalf("VerifyClientByToken() error = %v, want nil", err)
 			}
 
-			if tt.wantID != id {
-				t.Fatalf("expected id: %s, got: %s", tt.wantID, id)
+			if gotID != tt.wantID {
+				t.Errorf("VerifyClientByToken() ID = %s, want %s", gotID, tt.wantID)
+			}
+
+			if repo.calls != tt.wantCalls {
+				t.Fatalf("repository calls = %d, want %d", repo.calls, tt.wantCalls)
+			}
+
+			if tt.wantCalls > 0 {
+				wantHash := token.HashToken(clientToken)
+				if repo.hash != wantHash {
+					t.Errorf("repository hash = %q, want %q", repo.hash, wantHash)
+				}
+				if repo.hash == clientToken {
+					t.Error("repository received the plaintext token")
+				}
 			}
 		})
 	}

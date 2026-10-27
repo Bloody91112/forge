@@ -7,288 +7,275 @@ import (
 	"forge/internal/task"
 	"forge/internal/testutil"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestTaskRepository_CreateOrGetByIdempotencyKey(t *testing.T) {
-	db, err := testutil.OpenPostgres(t, true)
-
-	if err != nil {
-		t.Fatalf("test db connection failed: %v", err)
-	}
-
-	clientId, err := testutil.CreateTestClient(t, db)
-
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
 	repo := NewTaskRepository(db)
+	expected := newTestTask(clientID)
 
-	idempotencyKey := uuid.New().String()
-	var maxAttempts int64 = 12
-	var timeout int64 = 100
-
-	expected := task.Task{
-		ID:             uuid.New(),
-		ClientID:       clientId,
-		IdempotencyKey: idempotencyKey,
-		RequestHash:    "456",
-		Type:           "email-send",
-		Payload:        []byte(`{"user_id":42}`),
-		Status:         task.StatusQueued,
-		MaxAttempts:    maxAttempts,
-		TimeoutSeconds: timeout,
-	}
-
-	actual, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
-
+	got, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
 	if err != nil {
-		t.Fatalf("failed to create task: %v", err)
+		t.Fatalf("CreateOrGetByIdempotencyKey() error = %v", err)
 	}
-
 	if !created {
-		t.Fatalf("created param expected to be true, got false")
+		t.Fatal("CreateOrGetByIdempotencyKey() created = false, want true")
 	}
 
-	if diff := cmp.Diff(expected, actual, cmpopts.IgnoreFields(task.Task{}, "CreatedAt", "AvailableAt", "Payload")); diff != "" {
-		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	assertTaskEqual(t, expected, got)
+
+	if got.CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero")
 	}
-
-	assertJSONEqual(t, expected.Payload, actual.Payload)
-
-	if actual.CreatedAt.IsZero() {
-		t.Error("CreatedAt should not be zero")
+	if got.AvailableAt.IsZero() {
+		t.Error("AvailableAt is zero")
 	}
-
-	if actual.AvailableAt.IsZero() {
-		t.Error("AvailableAt should not be zero")
-	}
-
-	repeatResult, repeatCreated, repeatErr := repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
-	if repeatErr != nil {
-		t.Fatalf("failed repeat request: %v", repeatErr)
-	}
-
-	if repeatCreated {
-		t.Fatalf("repeat create param expected to be false, got true")
-	}
-
-	if diff := cmp.Diff(expected, repeatResult, cmpopts.IgnoreFields(task.Task{}, "CreatedAt", "AvailableAt", "Payload")); diff != "" {
-		t.Errorf("task mismatch (-want +got):\n%s", diff)
-	}
-
-	otherClientId, err := testutil.CreateTestClient(t, db)
-
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-
-	otherClientTaskWithSameKey := task.Task{
-		ID:             uuid.New(),
-		ClientID:       otherClientId,
-		IdempotencyKey: idempotencyKey,
-		RequestHash:    "456",
-		Type:           "email-send",
-		Payload:        []byte(`{"user_id":40}`),
-		Status:         task.StatusQueued,
-		MaxAttempts:    maxAttempts,
-		TimeoutSeconds: timeout,
-	}
-
-	otherResult, otherCreated, otherErr := repo.CreateOrGetByIdempotencyKey(t.Context(), otherClientTaskWithSameKey)
-
-	if otherErr != nil {
-		t.Fatalf("failed other client request: %v", otherErr)
-	}
-
-	if !otherCreated {
-		t.Fatalf("other create param expected to be true, got false")
-	}
-
-	if diff := cmp.Diff(otherClientTaskWithSameKey, otherResult, cmpopts.IgnoreFields(task.Task{}, "CreatedAt", "AvailableAt", "Payload")); diff != "" {
-		t.Errorf("task mismatch (-want +got):\n%s", diff)
-	}
-
-	assertJSONEqual(t, otherClientTaskWithSameKey.Payload, otherResult.Payload)
-
 }
 
-func TestTaskRepository_GetByID(t *testing.T) {
-	db, err := testutil.OpenPostgres(t, true)
+func TestTaskRepository_CreateOrGetByIdempotencyKey_ReturnsExistingTask(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+	expected := newTestTask(clientID)
 
+	first, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
 	if err != nil {
-		t.Fatalf("test db connection failed: %v", err)
+		t.Fatalf("first CreateOrGetByIdempotencyKey() error = %v", err)
+	}
+	if !created {
+		t.Fatal("first CreateOrGetByIdempotencyKey() created = false, want true")
 	}
 
-	clientId, err := testutil.CreateTestClient(t, db)
-
+	got, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
 	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
+		t.Fatalf("repeated CreateOrGetByIdempotencyKey() error = %v", err)
+	}
+	if created {
+		t.Fatal("repeated CreateOrGetByIdempotencyKey() created = true, want false")
 	}
 
+	assertTaskEqual(t, first, got)
+}
+
+func TestTaskRepository_CreateOrGetByIdempotencyKey_SameKeyDifferentPayload(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+	expected := newTestTask(clientID)
+
+	first, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
+	if err != nil {
+		t.Fatalf("first CreateOrGetByIdempotencyKey() error = %v", err)
+	}
+	if !created {
+		t.Fatal("first CreateOrGetByIdempotencyKey() created = false, want true")
+	}
+
+	retry := expected
+	retry.ID = uuid.New()
+	retry.Payload = json.RawMessage(`{"user_id":99}`)
+	retry.RequestHash = "different"
+
+	got, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), retry)
+	if err != nil {
+		t.Fatalf("retry CreateOrGetByIdempotencyKey() error = %v", err)
+	}
+	if created {
+		t.Fatal("retry CreateOrGetByIdempotencyKey() created = true, want false")
+	}
+
+	assertTaskEqual(t, first, got)
+}
+
+func TestTaskRepository_CreateOrGetByIdempotencyKey_AllowsSameKeyForDifferentClients(t *testing.T) {
+	db := openTestDB(t)
+	firstClientID := createTestClient(t, db)
+	secondClientID := createTestClient(t, db)
 	repo := NewTaskRepository(db)
 
-	expected := task.Task{
-		ID:             uuid.New(),
-		ClientID:       clientId,
-		IdempotencyKey: uuid.New().String(),
-		RequestHash:    "456",
-		Type:           "email-send",
-		Payload:        []byte(`{"user_id":42}`),
-		Status:         task.StatusQueued,
-		MaxAttempts:    12,
-		TimeoutSeconds: 100,
-	}
+	firstTask := newTestTask(firstClientID)
+	secondTask := newTestTask(secondClientID)
+	secondTask.IdempotencyKey = firstTask.IdempotencyKey
 
-	_, _, err = repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
-
+	first, firstCreated, err := repo.CreateOrGetByIdempotencyKey(t.Context(), firstTask)
 	if err != nil {
-		t.Fatalf("failed to create task: %v", err)
+		t.Fatalf("first CreateOrGetByIdempotencyKey() error = %v", err)
+	}
+	if !firstCreated {
+		t.Fatal("first CreateOrGetByIdempotencyKey() created = false, want true")
 	}
 
-	got, err := repo.GetByID(t.Context(), expected.ID, clientId)
-
+	second, secondCreated, err := repo.CreateOrGetByIdempotencyKey(t.Context(), secondTask)
 	if err != nil {
-		t.Fatalf("failed to get task: %v", err)
+		t.Fatalf("second CreateOrGetByIdempotencyKey() error = %v", err)
+	}
+	if !secondCreated {
+		t.Fatal("second CreateOrGetByIdempotencyKey() created = false, want true")
 	}
 
-	if diff := cmp.Diff(expected, got, cmpopts.IgnoreFields(task.Task{}, "CreatedAt", "AvailableAt", "Payload")); diff != "" {
-		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	assertTaskEqual(t, firstTask, first)
+	assertTaskEqual(t, secondTask, second)
+
+	if first.ID == second.ID {
+		t.Fatal("tasks for different clients have the same ID")
 	}
-
-	assertJSONEqual(t, expected.Payload, got.Payload)
-
-	unknownTaskID := uuid.New()
-
-	_, err = repo.GetByID(t.Context(), unknownTaskID, clientId)
-
-	if !errors.Is(err, task.ErrTaskNotFound) {
-		t.Fatalf("unexpected err, expected err: %v, got: %v", task.ErrTaskNotFound, err)
-	}
-
 }
 
 func TestTaskRepository_CreateOrGetByIdempotencyKey_WithConcurrency(t *testing.T) {
-	db, err := testutil.OpenPostgres(t, true)
-
-	if err != nil {
-		t.Fatalf("test db connection failed: %v", err)
-	}
-
-	clientId, err := testutil.CreateTestClient(t, db)
-
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
 	repo := NewTaskRepository(db)
+	expected := newTestTask(clientID)
 
-	taskID := uuid.New()
-	idempotencyKey := uuid.New().String()
+	const goroutineCount = 100
 
-	taskToCreate := task.Task{
-		ID:             taskID,
-		ClientID:       clientId,
-		IdempotencyKey: idempotencyKey,
-		RequestHash:    "456",
-		Type:           "email-send",
-		Payload:        []byte(`{"user_id":42}`),
-		Status:         task.StatusQueued,
-		MaxAttempts:    12,
-		TimeoutSeconds: 100,
-	}
+	var (
+		wg           sync.WaitGroup
+		createdCount atomic.Int64
+	)
 
-	var wg sync.WaitGroup
-	gCount := 100
+	wg.Add(goroutineCount)
 
-	wg.Add(gCount)
-
-	for range gCount {
+	for range goroutineCount {
 		go func() {
 			defer wg.Done()
-			got, _, err := repo.CreateOrGetByIdempotencyKey(t.Context(), taskToCreate)
+
+			got, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
 			if err != nil {
-				t.Errorf("CreateOrGetByIdempotencyKey failed: %v", err)
+				t.Errorf("CreateOrGetByIdempotencyKey() error = %v", err)
 				return
 			}
-
-			if got.ID != taskID {
-				t.Errorf("unexpected task, expected:%s got:%s", taskID.String(), got.ID.String())
+			if created {
+				createdCount.Add(1)
+			}
+			if got.ID != expected.ID {
+				t.Errorf("task ID = %s, want %s", got.ID, expected.ID)
 			}
 		}()
 	}
 
 	wg.Wait()
 
-	var countRows int
-
-	countRowsErr := db.QueryRow(t.Context(), "SELECT COUNT(*) FROM tasks WHERE idempotency_key = $1 AND client_id = $2", idempotencyKey, clientId).Scan(&countRows)
-
-	if countRowsErr != nil {
-		t.Fatalf("count result rows failed: %v", countRowsErr)
+	if got := createdCount.Load(); got != 1 {
+		t.Errorf("number of created tasks = %d, want 1", got)
 	}
 
-	if countRows != 1 {
-		t.Fatalf("expected row count, expected: %d, got:%d", 1, countRows)
+	var count int
+	err := db.QueryRow(
+		t.Context(),
+		"SELECT COUNT(*) FROM tasks WHERE idempotency_key = $1 AND client_id = $2",
+		expected.IdempotencyKey,
+		clientID,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("number of stored tasks = %d, want 1", count)
+	}
+}
+
+func TestTaskRepository_GetByID(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+	expected := newTestTask(clientID)
+
+	if _, _, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected); err != nil {
+		t.Fatalf("CreateOrGetByIdempotencyKey() error = %v", err)
+	}
+
+	got, err := repo.GetByID(t.Context(), expected.ID, clientID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	assertTaskEqual(t, expected, got)
+
+	_, err = repo.GetByID(t.Context(), uuid.New(), clientID)
+	if !errors.Is(err, task.ErrTaskNotFound) {
+		t.Errorf("GetByID() error = %v, want %v", err, task.ErrTaskNotFound)
 	}
 }
 
 func TestTaskRepository_GetByID_ReturnsErrWhenTaskBelongsToAnotherClient(t *testing.T) {
-	db, err := testutil.OpenPostgres(t, true)
-
-	if err != nil {
-		t.Fatalf("test db connection failed: %v", err)
-	}
-
-	clientId, err := testutil.CreateTestClient(t, db)
-
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	otherClientID := createTestClient(t, db)
 	repo := NewTaskRepository(db)
+	expected := newTestTask(clientID)
 
-	expected := task.Task{
+	if _, _, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected); err != nil {
+		t.Fatalf("CreateOrGetByIdempotencyKey() error = %v", err)
+	}
+
+	_, err := repo.GetByID(t.Context(), expected.ID, otherClientID)
+	if !errors.Is(err, task.ErrTaskNotFound) {
+		t.Errorf("GetByID() error = %v, want %v", err, task.ErrTaskNotFound)
+	}
+}
+
+func openTestDB(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+
+	db, err := testutil.OpenPostgres(t, true)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+
+	return db
+}
+
+func createTestClient(t *testing.T, db *pgxpool.Pool) uuid.UUID {
+	t.Helper()
+
+	clientID, err := testutil.CreateTestClient(t, db)
+	if err != nil {
+		t.Fatalf("create test client: %v", err)
+	}
+
+	return clientID
+}
+
+func newTestTask(clientID uuid.UUID) task.Task {
+	return task.Task{
 		ID:             uuid.New(),
-		ClientID:       clientId,
-		IdempotencyKey: uuid.New().String(),
+		ClientID:       clientID,
+		IdempotencyKey: uuid.NewString(),
 		RequestHash:    "456",
 		Type:           "email-send",
-		Payload:        []byte(`{"user_id":42}`),
+		Payload:        json.RawMessage(`{"user_id":42}`),
 		Status:         task.StatusQueued,
 		MaxAttempts:    12,
 		TimeoutSeconds: 100,
 	}
-
-	otherClientId, err := testutil.CreateTestClient(t, db)
-
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-
-	_, _, err = repo.CreateOrGetByIdempotencyKey(t.Context(), expected)
-
-	if err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
-
-	_, err = repo.GetByID(t.Context(), expected.ID, otherClientId)
-
-	if !errors.Is(err, task.ErrTaskNotFound) {
-		t.Fatalf("expected err: %v, got: %v", task.ErrTaskNotFound, err)
-	}
-
 }
 
-func assertJSONEqual(t *testing.T, expected, actual json.RawMessage) {
+func assertTaskEqual(t *testing.T, want, got task.Task) {
 	t.Helper()
 
-	var want, got any
+	if diff := cmp.Diff(
+		want,
+		got,
+		cmpopts.IgnoreFields(task.Task{}, "CreatedAt", "AvailableAt", "Payload"),
+	); diff != "" {
+		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	}
+
+	assertJSONEqual(t, want.Payload, got.Payload)
+}
+
+func assertJSONEqual(t *testing.T, want, got json.RawMessage) {
+	t.Helper()
+
+	var expected, actual any
 
 	decode := func(data json.RawMessage, dst *any) error {
 		decoder := json.NewDecoder(bytes.NewReader(data))
@@ -296,15 +283,14 @@ func assertJSONEqual(t *testing.T, expected, actual json.RawMessage) {
 		return decoder.Decode(dst)
 	}
 
-	if err := decode(expected, &want); err != nil {
+	if err := decode(want, &expected); err != nil {
 		t.Fatalf("decode expected JSON: %v", err)
 	}
-
-	if err := decode(actual, &got); err != nil {
+	if err := decode(got, &actual); err != nil {
 		t.Fatalf("decode actual JSON: %v", err)
 	}
 
-	if diff := cmp.Diff(want, got); diff != "" {
+	if diff := cmp.Diff(expected, actual); diff != "" {
 		t.Errorf("JSON mismatch (-want +got):\n%s", diff)
 	}
 }
