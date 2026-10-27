@@ -10,48 +10,44 @@ import (
 	"github.com/google/uuid"
 )
 
-type TaskRepositoryStub struct {
+type taskRepositoryStub struct {
 	task Task
 
-	lookupTask    Task
-	lookupTaskSet bool
-	lookupErr     error
-	lookupCalled  bool
-	lookupClient  uuid.UUID
-	lookupKey     string
+	lookupTask   *Task
+	lookupErr    error
+	lookupCalled bool
+	lookupClient uuid.UUID
+	lookupKey    string
 
 	getByIDErr    error
 	getByIDCalled bool
 	gotTaskID     uuid.UUID
 	gotClientID   uuid.UUID
 
-	createTask    Task
-	createTaskSet bool
+	createTask    *Task
 	createCreated bool
 	createErr     error
 	createCalled  bool
-	createInput   Task
 }
 
-func (r *TaskRepositoryStub) CreateOrGetByIdempotencyKey(
+func (r *taskRepositoryStub) CreateOrGetByIdempotencyKey(
 	_ context.Context,
 	task Task,
 ) (Task, bool, error) {
 	r.createCalled = true
-	r.createInput = task
 
 	if r.createErr != nil {
 		return Task{}, false, r.createErr
 	}
 
-	if r.createTaskSet {
-		return r.createTask, r.createCreated, nil
+	if r.createTask != nil {
+		return *r.createTask, r.createCreated, nil
 	}
 
 	return task, true, nil
 }
 
-func (r *TaskRepositoryStub) GetByID(
+func (r *taskRepositoryStub) GetByID(
 	_ context.Context,
 	taskID uuid.UUID,
 	clientID uuid.UUID,
@@ -67,7 +63,7 @@ func (r *TaskRepositoryStub) GetByID(
 	return r.task, nil
 }
 
-func (r *TaskRepositoryStub) GetByIdempotencyKey(
+func (r *taskRepositoryStub) GetByIdempotencyKey(
 	_ context.Context,
 	clientID uuid.UUID,
 	key string,
@@ -80,20 +76,20 @@ func (r *TaskRepositoryStub) GetByIdempotencyKey(
 		return Task{}, r.lookupErr
 	}
 
-	if r.lookupTaskSet {
-		return r.lookupTask, nil
+	if r.lookupTask != nil {
+		return *r.lookupTask, nil
 	}
 
 	return Task{}, ErrTaskNotFound
 }
 
-type WorkerRepositoryStub struct {
+type workerRepositoryStub struct {
 	capabilities [][]string
 	err          error
 	called       bool
 }
 
-func (r *WorkerRepositoryStub) GetActiveWorkersCapabilities(
+func (r *workerRepositoryStub) GetActiveWorkersCapabilities(
 	_ context.Context,
 ) ([][]string, error) {
 	r.called = true
@@ -105,12 +101,17 @@ func (r *WorkerRepositoryStub) GetActiveWorkersCapabilities(
 	return r.capabilities, nil
 }
 
-func newCompatibleWorkerRepository(taskType string) *WorkerRepositoryStub {
-	return &WorkerRepositoryStub{
+func newServiceWithCompatibleWorker(
+	repo *taskRepositoryStub,
+	taskType string,
+) (*Service, *workerRepositoryStub) {
+	workersRepo := &workerRepositoryStub{
 		capabilities: [][]string{
 			{taskType},
 		},
 	}
+
+	return NewService(repo, workersRepo), workersRepo
 }
 
 func validCreateTaskInput() CreateTaskInput {
@@ -126,18 +127,60 @@ func validCreateTaskInput() CreateTaskInput {
 	}
 }
 
-func validCreateContext() context.Context {
-	return WithClientID(context.Background(), uuid.New())
+func validCreateContext(t *testing.T) context.Context {
+	t.Helper()
+
+	return WithClientID(t.Context(), uuid.New())
+}
+
+func expectedTaskForInput(
+	t *testing.T,
+	input CreateTaskInput,
+	clientID uuid.UUID,
+) Task {
+	t.Helper()
+
+	maxAttempts := int64(DefaultTaskMaxAttempts)
+	if input.MaxAttempts != nil {
+		maxAttempts = *input.MaxAttempts
+	}
+
+	timeoutSeconds := int64(DefaultTaskTimeout)
+	if input.TimeoutSeconds != nil {
+		timeoutSeconds = *input.TimeoutSeconds
+	}
+
+	hash, err := calculateRequestHash(
+		input.Payload,
+		input.Type,
+		timeoutSeconds,
+		maxAttempts,
+	)
+	if err != nil {
+		t.Fatalf("calculateRequestHash() error = %v", err)
+	}
+
+	return Task{
+		ID:             uuid.New(),
+		ClientID:       clientID,
+		IdempotencyKey: input.IdempotencyKey,
+		RequestHash:    hash,
+		Type:           input.Type,
+		Payload:        input.Payload,
+		Status:         StatusQueued,
+		MaxAttempts:    maxAttempts,
+		TimeoutSeconds: timeoutSeconds,
+	}
 }
 
 func TestService_GetByID_TaskExists(t *testing.T) {
 	taskID := uuid.New()
 	clientID := uuid.New()
 
-	repo := &TaskRepositoryStub{
+	repo := &taskRepositoryStub{
 		task: Task{ID: taskID},
 	}
-	service := NewService(repo, &WorkerRepositoryStub{})
+	service := NewService(repo, &workerRepositoryStub{})
 	ctx := WithClientID(t.Context(), clientID)
 
 	got, err := service.GetByID(ctx, taskID)
@@ -163,10 +206,10 @@ func TestService_GetByID_TaskExists(t *testing.T) {
 }
 
 func TestService_GetByID_TaskNotFound(t *testing.T) {
-	repo := &TaskRepositoryStub{
+	repo := &taskRepositoryStub{
 		getByIDErr: ErrTaskNotFound,
 	}
-	service := NewService(repo, &WorkerRepositoryStub{})
+	service := NewService(repo, &workerRepositoryStub{})
 	ctx := WithClientID(t.Context(), uuid.New())
 
 	_, err := service.GetByID(ctx, uuid.New())
@@ -176,8 +219,8 @@ func TestService_GetByID_TaskNotFound(t *testing.T) {
 }
 
 func TestService_GetByID_WithoutClientID(t *testing.T) {
-	repo := &TaskRepositoryStub{}
-	service := NewService(repo, &WorkerRepositoryStub{})
+	repo := &taskRepositoryStub{}
+	service := NewService(repo, &workerRepositoryStub{})
 
 	_, err := service.GetByID(t.Context(), uuid.New())
 	if !errors.Is(err, ErrMissingClientID) {
@@ -194,35 +237,15 @@ func TestService_Create(t *testing.T) {
 	clientID := uuid.New()
 	ctx := WithClientID(t.Context(), clientID)
 
-	repo := &TaskRepositoryStub{}
-	workersRepo := newCompatibleWorkerRepository(input.Type)
-	service := NewService(repo, workersRepo)
+	repo := &taskRepositoryStub{}
+	service, workersRepo := newServiceWithCompatibleWorker(repo, input.Type)
 
 	got, err := service.Create(ctx, input)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	hash, err := calculateRequestHash(
-		input.Payload,
-		input.Type,
-		*input.TimeoutSeconds,
-		*input.MaxAttempts,
-	)
-	if err != nil {
-		t.Fatalf("calculateRequestHash() error = %v", err)
-	}
-
-	want := Task{
-		ClientID:       clientID,
-		IdempotencyKey: input.IdempotencyKey,
-		RequestHash:    hash,
-		Type:           input.Type,
-		Payload:        input.Payload,
-		Status:         StatusQueued,
-		MaxAttempts:    *input.MaxAttempts,
-		TimeoutSeconds: *input.TimeoutSeconds,
-	}
+	want := expectedTaskForInput(t, input, clientID)
 
 	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(Task{}, "ID")); diff != "" {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
@@ -255,35 +278,15 @@ func TestService_CreateWithDefaultFields(t *testing.T) {
 	input.TimeoutSeconds = nil
 
 	clientID := uuid.New()
-	repo := &TaskRepositoryStub{}
-	workersRepo := newCompatibleWorkerRepository(input.Type)
-	service := NewService(repo, workersRepo)
+	repo := &taskRepositoryStub{}
+	service, _ := newServiceWithCompatibleWorker(repo, input.Type)
 
 	got, err := service.Create(WithClientID(t.Context(), clientID), input)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	hash, err := calculateRequestHash(
-		input.Payload,
-		input.Type,
-		DefaultTaskTimeout,
-		DefaultTaskMaxAttempts,
-	)
-	if err != nil {
-		t.Fatalf("calculateRequestHash() error = %v", err)
-	}
-
-	want := Task{
-		ClientID:       clientID,
-		IdempotencyKey: input.IdempotencyKey,
-		RequestHash:    hash,
-		Type:           input.Type,
-		Payload:        input.Payload,
-		Status:         StatusQueued,
-		MaxAttempts:    DefaultTaskMaxAttempts,
-		TimeoutSeconds: DefaultTaskTimeout,
-	}
+	want := expectedTaskForInput(t, input, clientID)
 
 	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(Task{}, "ID")); diff != "" {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
@@ -293,34 +296,12 @@ func TestService_CreateWithDefaultFields(t *testing.T) {
 func TestService_CreateExistingIdempotencyKeyReturnsTaskWithoutCheckingWorkers(t *testing.T) {
 	input := validCreateTaskInput()
 	clientID := uuid.New()
+	existingTask := expectedTaskForInput(t, input, clientID)
 
-	hash, err := calculateRequestHash(
-		input.Payload,
-		input.Type,
-		*input.TimeoutSeconds,
-		*input.MaxAttempts,
-	)
-	if err != nil {
-		t.Fatalf("calculateRequestHash() error = %v", err)
+	repo := &taskRepositoryStub{
+		lookupTask: &existingTask,
 	}
-
-	existingTask := Task{
-		ID:             uuid.New(),
-		ClientID:       clientID,
-		IdempotencyKey: input.IdempotencyKey,
-		RequestHash:    hash,
-		Type:           input.Type,
-		Payload:        input.Payload,
-		Status:         StatusQueued,
-		MaxAttempts:    *input.MaxAttempts,
-		TimeoutSeconds: *input.TimeoutSeconds,
-	}
-
-	repo := &TaskRepositoryStub{
-		lookupTask:    existingTask,
-		lookupTaskSet: true,
-	}
-	workersRepo := &WorkerRepositoryStub{}
+	workersRepo := &workerRepositoryStub{}
 	service := NewService(repo, workersRepo)
 
 	got, err := service.Create(WithClientID(t.Context(), clientID), input)
@@ -344,19 +325,13 @@ func TestService_CreateExistingIdempotencyKeyReturnsTaskWithoutCheckingWorkers(t
 func TestService_CreateExistingIdempotencyKeyWithDifferentHashReturnsConflict(t *testing.T) {
 	input := validCreateTaskInput()
 	clientID := uuid.New()
+	existingTask := expectedTaskForInput(t, input, clientID)
+	existingTask.RequestHash = "different-hash"
 
-	existingTask := Task{
-		ID:             uuid.New(),
-		ClientID:       clientID,
-		IdempotencyKey: input.IdempotencyKey,
-		RequestHash:    "different-hash",
+	repo := &taskRepositoryStub{
+		lookupTask: &existingTask,
 	}
-
-	repo := &TaskRepositoryStub{
-		lookupTask:    existingTask,
-		lookupTaskSet: true,
-	}
-	workersRepo := &WorkerRepositoryStub{}
+	workersRepo := &workerRepositoryStub{}
 	service := NewService(repo, workersRepo)
 
 	got, err := service.Create(WithClientID(t.Context(), clientID), input)
@@ -380,36 +355,12 @@ func TestService_CreateExistingIdempotencyKeyWithDifferentHashReturnsConflict(t 
 func TestService_CreateWithConcurrentIdempotencyConflict(t *testing.T) {
 	input := validCreateTaskInput()
 	clientID := uuid.New()
+	existingTask := expectedTaskForInput(t, input, clientID)
 
-	hash, err := calculateRequestHash(
-		input.Payload,
-		input.Type,
-		*input.TimeoutSeconds,
-		*input.MaxAttempts,
-	)
-	if err != nil {
-		t.Fatalf("calculateRequestHash() error = %v", err)
+	repo := &taskRepositoryStub{
+		createTask: &existingTask,
 	}
-
-	existingTask := Task{
-		ID:             uuid.New(),
-		ClientID:       clientID,
-		IdempotencyKey: input.IdempotencyKey,
-		RequestHash:    hash,
-		Type:           input.Type,
-		Payload:        input.Payload,
-		Status:         StatusQueued,
-		MaxAttempts:    *input.MaxAttempts,
-		TimeoutSeconds: *input.TimeoutSeconds,
-	}
-
-	repo := &TaskRepositoryStub{
-		createTask:    existingTask,
-		createTaskSet: true,
-		createCreated: false,
-	}
-	workersRepo := newCompatibleWorkerRepository(input.Type)
-	service := NewService(repo, workersRepo)
+	service, _ := newServiceWithCompatibleWorker(repo, input.Type)
 
 	got, err := service.Create(WithClientID(t.Context(), clientID), input)
 	if err != nil {
@@ -428,21 +379,13 @@ func TestService_CreateWithConcurrentIdempotencyConflict(t *testing.T) {
 func TestService_CreateWithConcurrentDifferentRequestReturnsConflict(t *testing.T) {
 	input := validCreateTaskInput()
 	clientID := uuid.New()
+	existingTask := expectedTaskForInput(t, input, clientID)
+	existingTask.RequestHash = "different-hash"
 
-	existingTask := Task{
-		ID:             uuid.New(),
-		ClientID:       clientID,
-		IdempotencyKey: input.IdempotencyKey,
-		RequestHash:    "different-hash",
+	repo := &taskRepositoryStub{
+		createTask: &existingTask,
 	}
-
-	repo := &TaskRepositoryStub{
-		createTask:    existingTask,
-		createTaskSet: true,
-		createCreated: false,
-	}
-	workersRepo := newCompatibleWorkerRepository(input.Type)
-	service := NewService(repo, workersRepo)
+	service, _ := newServiceWithCompatibleWorker(repo, input.Type)
 
 	got, err := service.Create(WithClientID(t.Context(), clientID), input)
 	if !errors.Is(err, ErrIdempotencyConflict) {
@@ -456,11 +399,11 @@ func TestService_CreateWithConcurrentDifferentRequestReturnsConflict(t *testing.
 
 func TestService_CreateWithoutActiveWorkers(t *testing.T) {
 	input := validCreateTaskInput()
-	repo := &TaskRepositoryStub{}
-	workersRepo := &WorkerRepositoryStub{}
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{}
 	service := NewService(repo, workersRepo)
 
-	_, err := service.Create(validCreateContext(), input)
+	_, err := service.Create(validCreateContext(t), input)
 	if !errors.Is(err, ErrNoActiveWorkers) {
 		t.Fatalf("error = %v, want %v", err, ErrNoActiveWorkers)
 	}
@@ -476,8 +419,8 @@ func TestService_CreateWithoutActiveWorkers(t *testing.T) {
 
 func TestService_CreateRejectsTaskWhenAnyActiveWorkerIsIncompatible(t *testing.T) {
 	input := validCreateTaskInput()
-	repo := &TaskRepositoryStub{}
-	workersRepo := &WorkerRepositoryStub{
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{
 		capabilities: [][]string{
 			{input.Type, "image-resize"},
 			{"report-generate"},
@@ -485,7 +428,7 @@ func TestService_CreateRejectsTaskWhenAnyActiveWorkerIsIncompatible(t *testing.T
 	}
 	service := NewService(repo, workersRepo)
 
-	_, err := service.Create(validCreateContext(), input)
+	_, err := service.Create(validCreateContext(t), input)
 	if !errors.Is(err, ErrTaskTypeNotSupported) {
 		t.Fatalf("error = %v, want %v", err, ErrTaskTypeNotSupported)
 	}
@@ -497,8 +440,8 @@ func TestService_CreateRejectsTaskWhenAnyActiveWorkerIsIncompatible(t *testing.T
 
 func TestService_CreateAcceptsTaskWhenAllActiveWorkersAreCompatible(t *testing.T) {
 	input := validCreateTaskInput()
-	repo := &TaskRepositoryStub{}
-	workersRepo := &WorkerRepositoryStub{
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{
 		capabilities: [][]string{
 			{input.Type},
 			{input.Type, "image-resize"},
@@ -507,7 +450,7 @@ func TestService_CreateAcceptsTaskWhenAllActiveWorkersAreCompatible(t *testing.T
 	}
 	service := NewService(repo, workersRepo)
 
-	got, err := service.Create(validCreateContext(), input)
+	got, err := service.Create(validCreateContext(t), input)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -525,13 +468,13 @@ func TestService_CreatePropagatesIdempotencyLookupError(t *testing.T) {
 	input := validCreateTaskInput()
 	lookupErr := errors.New("database unavailable")
 
-	repo := &TaskRepositoryStub{
+	repo := &taskRepositoryStub{
 		lookupErr: lookupErr,
 	}
-	workersRepo := &WorkerRepositoryStub{}
+	workersRepo := &workerRepositoryStub{}
 	service := NewService(repo, workersRepo)
 
-	_, err := service.Create(validCreateContext(), input)
+	_, err := service.Create(validCreateContext(t), input)
 	if !errors.Is(err, lookupErr) {
 		t.Fatalf("error = %v, want wrapped %v", err, lookupErr)
 	}
@@ -549,11 +492,11 @@ func TestService_CreatePropagatesWorkerRepositoryError(t *testing.T) {
 	input := validCreateTaskInput()
 	workersErr := errors.New("database unavailable")
 
-	repo := &TaskRepositoryStub{}
-	workersRepo := &WorkerRepositoryStub{err: workersErr}
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{err: workersErr}
 	service := NewService(repo, workersRepo)
 
-	_, err := service.Create(validCreateContext(), input)
+	_, err := service.Create(validCreateContext(t), input)
 	if !errors.Is(err, workersErr) {
 		t.Fatalf("error = %v, want wrapped %v", err, workersErr)
 	}
@@ -567,11 +510,10 @@ func TestService_CreatePropagatesCreateError(t *testing.T) {
 	input := validCreateTaskInput()
 	createErr := errors.New("insert failed")
 
-	repo := &TaskRepositoryStub{createErr: createErr}
-	workersRepo := newCompatibleWorkerRepository(input.Type)
-	service := NewService(repo, workersRepo)
+	repo := &taskRepositoryStub{createErr: createErr}
+	service, _ := newServiceWithCompatibleWorker(repo, input.Type)
 
-	_, err := service.Create(validCreateContext(), input)
+	_, err := service.Create(validCreateContext(t), input)
 	if !errors.Is(err, createErr) {
 		t.Fatalf("error = %v, want wrapped %v", err, createErr)
 	}
@@ -579,8 +521,8 @@ func TestService_CreatePropagatesCreateError(t *testing.T) {
 
 func TestService_Create_WithoutClientID(t *testing.T) {
 	input := validCreateTaskInput()
-	repo := &TaskRepositoryStub{}
-	workersRepo := &WorkerRepositoryStub{}
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{}
 	service := NewService(repo, workersRepo)
 
 	_, err := service.Create(t.Context(), input)
@@ -646,11 +588,10 @@ func TestService_Create_ValidatesLimits(t *testing.T) {
 			input.MaxAttempts = &tt.maxAttempts
 			input.TimeoutSeconds = &tt.timeoutSeconds
 
-			repo := &TaskRepositoryStub{}
-			workersRepo := newCompatibleWorkerRepository(input.Type)
-			service := NewService(repo, workersRepo)
+			repo := &taskRepositoryStub{}
+			service, _ := newServiceWithCompatibleWorker(repo, input.Type)
 
-			_, err := service.Create(validCreateContext(), input)
+			_, err := service.Create(validCreateContext(t), input)
 
 			if tt.wantErr {
 				if !errors.Is(err, ErrInvalidInput) {
@@ -715,11 +656,11 @@ func TestService_Create_ValidatesRequiredFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo := &TaskRepositoryStub{}
-			workersRepo := &WorkerRepositoryStub{}
+			repo := &taskRepositoryStub{}
+			workersRepo := &workerRepositoryStub{}
 			service := NewService(repo, workersRepo)
 
-			_, err := service.Create(validCreateContext(), tt.input())
+			_, err := service.Create(validCreateContext(t), tt.input())
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Fatalf("error = %v, want %v", err, ErrInvalidInput)
 			}

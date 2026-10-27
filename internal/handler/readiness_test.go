@@ -16,53 +16,50 @@ func (db *fakePinger) Ping(ctx context.Context) error {
 	return db.Result
 }
 
-func TestReadinessHandler_CheckWhenReady(t *testing.T) {
-
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-	rr := httptest.NewRecorder()
-
-	pingler := fakePinger{}
-	handler := NewReadinessHandler(&pingler)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /readyz", handler.Check)
-	mux.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status %d, got %d", http.StatusOK, rr.Code)
+func TestReadinessHandler_Check(t *testing.T) {
+	tests := []struct {
+		name           string
+		pingErr        error
+		setNotReady    bool
+		wantHTTPStatus int
+	}{
+		{
+			name:           "ready",
+			wantHTTPStatus: http.StatusOK,
+		},
+		{
+			name:           "database unavailable",
+			pingErr:        errors.New("db down"),
+			wantHTTPStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name:           "shutdown started",
+			setNotReady:    true,
+			wantHTTPStatus: http.StatusServiceUnavailable,
+		},
 	}
-}
 
-func TestReadinessHandler_CheckWhenNotReady(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pinger := fakePinger{Result: tt.pingErr}
+			handler := NewReadinessHandler(&pinger)
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-	rr := httptest.NewRecorder()
+			if tt.setNotReady {
+				handler.SetNotReady()
+			}
 
-	pingler := fakePinger{errors.New("db down")}
-	handler := NewReadinessHandler(&pingler)
+			req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+			recorder := httptest.NewRecorder()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /readyz", handler.Check)
-	mux.ServeHTTP(rr, req)
+			handler.Check(recorder, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected status %d, got %d", http.StatusServiceUnavailable, rr.Code)
-	}
-}
-
-func TestReadinessHandler_SetNotReady(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-	rr := httptest.NewRecorder()
-
-	pingler := fakePinger{}
-	handler := NewReadinessHandler(&pingler)
-	handler.SetNotReady()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /readyz", handler.Check)
-	mux.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected status %d, got %d", http.StatusServiceUnavailable, rr.Code)
+			if recorder.Code != tt.wantHTTPStatus {
+				t.Errorf(
+					"HTTP status = %d, want %d",
+					recorder.Code,
+					tt.wantHTTPStatus,
+				)
+			}
+		})
 	}
 }

@@ -48,27 +48,29 @@ func TestWorkerHandler_HeartbeatSuccess(t *testing.T) {
 		WorkerID:       workerID,
 		LeaseExpiresAt: expiry,
 	}
+
 	service := &heartbeatServiceStub{output: want}
 	handler := NewWorkerHandler(service)
 
-	req := httptest.NewRequest(
+	req := newJSONRequest(
 		http.MethodPost,
 		"/internal/v1/workers/heartbeat",
 		strings.NewReader(`{"worker_id":"`+workerID.String()+`"}`),
 	)
-	req.Header.Set("Content-Type", "application/json")
 
 	recorder := httptest.NewRecorder()
 	handler.Heartbeat(recorder, req)
 
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("HTTP status = %d, want %d; body: %s",
-			recorder.Code, http.StatusOK, recorder.Body.String())
+		t.Fatalf(
+			"HTTP status = %d, want %d; body: %s",
+			recorder.Code,
+			http.StatusOK,
+			recorder.Body.String(),
+		)
 	}
 
-	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
-	}
+	assertJSONContentType(t, recorder)
 
 	if service.calls != 1 {
 		t.Fatalf("service calls = %d, want 1", service.calls)
@@ -123,33 +125,16 @@ func TestWorkerHandler_HeartbeatMapsServiceErrors(t *testing.T) {
 			handler := NewWorkerHandler(service)
 			workerID := uuid.New()
 
-			req := httptest.NewRequest(
+			req := newJSONRequest(
 				http.MethodPost,
 				"/internal/v1/workers/heartbeat",
 				strings.NewReader(`{"worker_id":"`+workerID.String()+`"}`),
 			)
-			req.Header.Set("Content-Type", "application/json")
 
 			recorder := httptest.NewRecorder()
 			handler.Heartbeat(recorder, req)
 
-			if recorder.Code != tt.wantStatus {
-				t.Fatalf(
-					"HTTP status = %d, want %d; body: %s",
-					recorder.Code,
-					tt.wantStatus,
-					recorder.Body.String(),
-				)
-			}
-
-			var got httpresponse.ErrorResponse
-			if err := json.NewDecoder(recorder.Body).Decode(&got); err != nil {
-				t.Fatalf("decode error response: %v", err)
-			}
-
-			if got.Error.Code != tt.wantCode {
-				t.Fatalf("error code = %q, want %q", got.Error.Code, tt.wantCode)
-			}
+			assertJSONErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
 
 			if service.calls != 1 {
 				t.Fatalf("service calls = %d, want 1", service.calls)

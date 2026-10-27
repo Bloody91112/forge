@@ -25,14 +25,21 @@ type workerServiceStub struct {
 	input  worker.RegisterRequestDTO
 }
 
-func (s *workerServiceStub) Register(ctx context.Context, bootstrapToken string, input worker.RegisterRequestDTO) (worker.RegisterResponseDTO, error) {
+func (s *workerServiceStub) Register(
+	ctx context.Context,
+	bootstrapToken string,
+	input worker.RegisterRequestDTO,
+) (worker.RegisterResponseDTO, error) {
 	s.calls++
 	s.token = bootstrapToken
 	s.input = input
 	return s.output, s.err
 }
 
-func (s *workerServiceStub) ExtendLease(ctx context.Context, input worker.HeartbeatRequestDTO) (worker.HeartbeatResponseDTO, error) {
+func (s *workerServiceStub) ExtendLease(
+	ctx context.Context,
+	input worker.HeartbeatRequestDTO,
+) (worker.HeartbeatResponseDTO, error) {
 	s.calls++
 	return worker.HeartbeatResponseDTO{
 		WorkerID:       input.WorkerID,
@@ -41,35 +48,13 @@ func (s *workerServiceStub) ExtendLease(ctx context.Context, input worker.Heartb
 }
 
 func workerRequest(body string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workers", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req := newJSONRequest(http.MethodPost, "/api/v1/workers", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer bootstrap-secret")
 	return req
 }
 
 func validWorkerJSON() string {
 	return `{"worker_id":"` + uuid.NewString() + `","protocol_version":"1","capabilities":["email"]}`
-}
-
-func assertWorkerErrorResponse(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantCode string) {
-	t.Helper()
-
-	if recorder.Code != wantStatus {
-		t.Fatalf("HTTP status = %d, want %d; body: %s", recorder.Code, wantStatus, recorder.Body.String())
-	}
-
-	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
-	}
-
-	var response httpresponse.ErrorResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode error response: %v", err)
-	}
-
-	if response.Error.Code != wantCode {
-		t.Fatalf("error code = %q, want %q", response.Error.Code, wantCode)
-	}
 }
 
 func TestWorkerHandler_RegisterRejectsInvalidRequests(t *testing.T) {
@@ -131,8 +116,13 @@ func TestWorkerHandler_RegisterRejectsInvalidRequests(t *testing.T) {
 			service := &workerServiceStub{}
 			handler := NewWorkerHandler(service)
 
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/workers", strings.NewReader(tt.body))
+			req := newJSONRequest(
+				http.MethodPost,
+				"/api/v1/workers",
+				strings.NewReader(tt.body),
+			)
 			req.Header.Set("Content-Type", tt.contentType)
+
 			if tt.authHeader != "" {
 				req.Header.Set("Authorization", tt.authHeader)
 			}
@@ -140,7 +130,7 @@ func TestWorkerHandler_RegisterRejectsInvalidRequests(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			handler.Register(recorder, req)
 
-			assertWorkerErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
+			assertJSONErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
 
 			if service.calls != 0 {
 				t.Fatalf("service calls = %d, want 0", service.calls)
@@ -190,7 +180,7 @@ func TestWorkerHandler_RegisterMapsServiceErrors(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			handler.Register(recorder, workerRequest(validWorkerJSON()))
 
-			assertWorkerErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
+			assertJSONErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
 
 			if service.calls != 1 {
 				t.Fatalf("service calls = %d, want 1", service.calls)
@@ -209,6 +199,7 @@ func TestWorkerHandler_RegisterSuccess(t *testing.T) {
 		Token:          "generated-worker-token",
 		LeaseExpiresAt: workerLeaseExpiry(),
 	}
+
 	service := &workerServiceStub{output: want}
 	handler := NewWorkerHandler(service)
 
@@ -219,12 +210,15 @@ func TestWorkerHandler_RegisterSuccess(t *testing.T) {
 	handler.Register(recorder, workerRequest(body))
 
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("HTTP status = %d, want %d; body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+		t.Fatalf(
+			"HTTP status = %d, want %d; body: %s",
+			recorder.Code,
+			http.StatusOK,
+			recorder.Body.String(),
+		)
 	}
 
-	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
-	}
+	assertJSONContentType(t, recorder)
 
 	if service.calls != 1 {
 		t.Fatalf("service calls = %d, want 1", service.calls)

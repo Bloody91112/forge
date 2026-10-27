@@ -33,15 +33,15 @@ func (s *FakeTaskService) Create(ctx context.Context, dto task.CreateTaskInput) 
 }
 
 func TestTaskHandler_CreateTask(t *testing.T) {
+	idempotencyKey := "123"
+
 	wantTask := task.Task{
 		ID:        uuid.New(),
 		Type:      "email-send",
 		Status:    task.StatusQueued,
 		CreatedAt: time.Now(),
 	}
-
-	wantTaskResponse := newCreateTaskResponse(wantTask)
-	idempotencyKey := "123"
+	wantResponse := newCreateTaskResponse(wantTask)
 
 	tests := []struct {
 		name         string
@@ -50,215 +50,210 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 		serviceErr   error
 		serviceTask  task.Task
 		wantResponse CreateTaskResponse
-		wantHttpCode int
+		wantHTTPCode int
 		wantErrCode  string
 	}{
 		{
-			name: "not json content type provided response",
+			name: "invalid content type",
 			headers: map[string]string{
-				"Content-type":    "text",
+				"Content-Type":    "text",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
-			wantHttpCode: http.StatusUnsupportedMediaType,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
+			wantHTTPCode: http.StatusUnsupportedMediaType,
 			wantErrCode:  httpresponse.ErrCodeMediaTypeError,
 		},
 		{
-			name: "no idempotency key error response",
+			name: "missing idempotency key",
 			headers: map[string]string{
-				"Content-type": "application/json",
+				"Content-Type": "application/json",
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
-			wantHttpCode: http.StatusBadRequest,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
+			wantHTTPCode: http.StatusBadRequest,
 			wantErrCode:  httpresponse.ErrCodeIdempotencyKeyError,
 		},
 		{
-			name: "not valid json payload error response",
+			name: "invalid JSON",
 			headers: map[string]string{
-				"Content-type":    "application/json",
+				"Content-Type":    "application/json",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"},}`,
-			wantHttpCode: http.StatusBadRequest,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"},}`,
+			wantHTTPCode: http.StatusBadRequest,
 			wantErrCode:  httpresponse.ErrCodeInvalidJSONPayload,
 		},
 		{
-			name: "second json payload error response",
+			name: "multiple JSON values",
 			headers: map[string]string{
-				"Content-type":    "application/json",
+				"Content-Type":    "application/json",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"} {}}`,
-			wantHttpCode: http.StatusBadRequest,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}} {}`,
+			wantHTTPCode: http.StatusBadRequest,
 			wantErrCode:  httpresponse.ErrCodeInvalidJSONPayload,
 		},
 		{
-			name: "failed payload param check in service response",
+			name: "invalid task input",
 			headers: map[string]string{
-				"Content-type":    "application/json",
+				"Content-Type":    "application/json",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
 			serviceErr:   task.ErrInvalidInput,
-			wantHttpCode: http.StatusBadRequest,
+			wantHTTPCode: http.StatusBadRequest,
 			wantErrCode:  httpresponse.ErrCodeInvalidPayload,
 		},
 		{
-			name: "no client id error response",
+			name: "missing client ID",
 			headers: map[string]string{
-				"Content-type":    "application/json",
+				"Content-Type":    "application/json",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
 			serviceErr:   task.ErrMissingClientID,
-			wantHttpCode: http.StatusInternalServerError,
+			wantHTTPCode: http.StatusInternalServerError,
 			wantErrCode:  httpresponse.ErrCodeCreateTaskFailed,
 		},
 		{
-			name: "idempotency conflict error response",
+			name: "idempotency conflict",
 			headers: map[string]string{
-				"Content-type":    "application/json",
+				"Content-Type":    "application/json",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
 			serviceErr:   task.ErrIdempotencyConflict,
-			wantHttpCode: http.StatusConflict,
+			wantHTTPCode: http.StatusConflict,
 			wantErrCode:  httpresponse.ErrCodeIdempotencyConflict,
 		},
 		{
-			name: "unknown error response",
+			name: "unknown service error",
 			headers: map[string]string{
-				"Content-type":    "application/json",
+				"Content-Type":    "application/json",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
 			serviceErr:   errors.New("something went wrong"),
-			wantHttpCode: http.StatusInternalServerError,
+			wantHTTPCode: http.StatusInternalServerError,
 			wantErrCode:  httpresponse.ErrCodeCreateTaskFailed,
 		},
 		{
-			name: "happy path response",
+			name: "success",
 			headers: map[string]string{
-				"Content-type":    "application/json",
+				"Content-Type":    "application/json",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type": "send-email", "payload": {"recipient": "user@example.com"}}`,
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
 			serviceTask:  wantTask,
-			wantHttpCode: http.StatusAccepted,
-			wantResponse: wantTaskResponse,
+			wantHTTPCode: http.StatusAccepted,
+			wantResponse: wantResponse,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/tasks",
+				strings.NewReader(tt.body),
+			)
 
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(tt.body))
-			rr := httptest.NewRecorder()
-
-			for headerKey, headerValue := range tt.headers {
-				req.Header.Set(headerKey, headerValue)
+			for key, value := range tt.headers {
+				req.Header.Set(key, value)
 			}
 
-			service := FakeTaskService{
+			service := &FakeTaskService{
 				task: tt.serviceTask,
 				err:  tt.serviceErr,
 			}
-
-			handler := NewTaskHandler(&service)
+			handler := NewTaskHandler(service)
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("POST /api/v1/tasks", handler.CreateTask)
+
+			rr := httptest.NewRecorder()
 			mux.ServeHTTP(rr, req)
 
-			if rr.Code != tt.wantHttpCode {
-				t.Errorf("expected http code: %d, got: %d", tt.wantHttpCode, rr.Code)
-			}
-
 			if tt.wantErrCode != "" {
-				var responseErr httpresponse.ErrorResponse
-				if err := json.NewDecoder(rr.Body).Decode(&responseErr); err != nil {
-					t.Fatalf("failed to decode err: %v", err)
-				}
-
-				if responseErr.Error.Code != tt.wantErrCode {
-					t.Fatalf("expected error code: %s, got: %s", tt.wantErrCode, responseErr.Error.Code)
-				}
+				assertJSONErrorResponse(t, rr, tt.wantHTTPCode, tt.wantErrCode)
+				return
 			}
 
-			if tt.wantResponse != (CreateTaskResponse{}) {
-				if service.createInput.IdempotencyKey != idempotencyKey {
-					t.Errorf("expected service idempotency key: %q, got: %q", idempotencyKey, service.createInput.IdempotencyKey)
-				}
-
-				var taskResponse CreateTaskResponse
-				if err := json.NewDecoder(rr.Body).Decode(&taskResponse); err != nil {
-					t.Fatalf("failed to decode task response: %v", err)
-				}
-
-				if diff := cmp.Diff(tt.wantResponse, taskResponse); diff != "" {
-					t.Errorf("task response mismatch (-want +got):\n%s", diff)
-				}
+			if rr.Code != tt.wantHTTPCode {
+				t.Fatalf(
+					"HTTP status = %d, want %d; body: %s",
+					rr.Code,
+					tt.wantHTTPCode,
+					rr.Body.String(),
+				)
 			}
 
-			if responseContentType := rr.Header().Get("Content-Type"); responseContentType != "application/json" {
-				t.Errorf("expected json response content type, got: %s", responseContentType)
+			assertJSONContentType(t, rr)
+
+			if service.createInput.IdempotencyKey != idempotencyKey {
+				t.Errorf(
+					"service idempotency key = %q, want %q",
+					service.createInput.IdempotencyKey,
+					idempotencyKey,
+				)
 			}
 
+			var gotResponse CreateTaskResponse
+			if err := json.NewDecoder(rr.Body).Decode(&gotResponse); err != nil {
+				t.Fatalf("decode task response: %v", err)
+			}
+
+			if diff := cmp.Diff(tt.wantResponse, gotResponse); diff != "" {
+				t.Errorf("task response mismatch (-want +got):\n%s", diff)
+			}
 		})
 	}
 }
 
 func TestTaskHandler_CreateTask_TooLargeRequestBody(t *testing.T) {
-	var taskInput task.CreateTaskInput
-
-	oneMBPlusString := strings.Repeat("A", maxTaskRequestBodySize+1)
-	taskInput.Type = oneMBPlusString
+	taskInput := task.CreateTaskInput{
+		Type: strings.Repeat("A", maxTaskRequestBodySize+1),
+	}
 
 	jsonBytes, err := json.Marshal(taskInput)
 	if err != nil {
-		t.Fatalf("Failed to marshal JSON: %v", err)
+		t.Fatalf("marshal request body: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(jsonBytes))
-	rr := httptest.NewRecorder()
-
-	req.Header.Set("Content-type", "application/json")
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/tasks",
+		bytes.NewReader(jsonBytes),
+	)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "123")
 
-	service := FakeTaskService{}
-
-	handler := NewTaskHandler(&service)
+	service := &FakeTaskService{}
+	handler := NewTaskHandler(service)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/tasks", handler.CreateTask)
+
+	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("expected http code: %d, got: %d", http.StatusRequestEntityTooLarge, rr.Code)
-	}
-
-	var responseErr httpresponse.ErrorResponse
-	if err := json.NewDecoder(rr.Body).Decode(&responseErr); err != nil {
-		t.Fatalf("failed to decode err: %v", err)
-	}
-
-	if responseErr.Error.Code != httpresponse.ErrCodeRequestBodyLimit {
-		t.Fatalf("expected error code: %s, got: %s", httpresponse.ErrCodeRequestBodyLimit, responseErr.Error.Code)
-	}
-
+	assertJSONErrorResponse(
+		t,
+		rr,
+		http.StatusRequestEntityTooLarge,
+		httpresponse.ErrCodeRequestBodyLimit,
+	)
 }
 
 func TestTaskHandler_GetTask(t *testing.T) {
-	taskUuid := uuid.New()
+	taskID := uuid.New()
 
 	wantTask := task.Task{
-		ID:     taskUuid,
+		ID:     taskID,
 		Type:   "email-send",
 		Status: task.StatusQueued,
 		Result: []byte(`{"user_id":42}`),
 	}
-
-	wantTaskResponse := newGetTaskResponse(wantTask)
+	wantResponse := newGetTaskResponse(wantTask)
 
 	tests := []struct {
 		name         string
@@ -266,90 +261,82 @@ func TestTaskHandler_GetTask(t *testing.T) {
 		serviceErr   error
 		serviceTask  task.Task
 		wantResponse *GetTaskResponse
-		wantHttpCode int
+		wantHTTPCode int
 		wantErrCode  string
 	}{
 		{
-			name:         "invalid task id in path",
+			name:         "invalid task ID",
 			pathID:       "123",
-			wantHttpCode: http.StatusBadRequest,
+			wantHTTPCode: http.StatusBadRequest,
 			wantErrCode:  httpresponse.ErrCodeInvalidTaskID,
 		},
 		{
-			name:         "happy path response",
-			pathID:       taskUuid.String(),
+			name:         "success",
+			pathID:       taskID.String(),
 			serviceTask:  wantTask,
-			wantResponse: &wantTaskResponse,
-			wantHttpCode: http.StatusOK,
+			wantResponse: &wantResponse,
+			wantHTTPCode: http.StatusOK,
 		},
 		{
 			name:         "task not found",
-			pathID:       taskUuid.String(),
+			pathID:       taskID.String(),
 			serviceErr:   task.ErrTaskNotFound,
-			wantHttpCode: http.StatusNotFound,
+			wantHTTPCode: http.StatusNotFound,
 			wantErrCode:  httpresponse.ErrCodeTaskNotFound,
 		},
 		{
-			name:         "unknown error",
-			pathID:       taskUuid.String(),
+			name:         "unknown service error",
+			pathID:       taskID.String(),
 			serviceErr:   errors.New("something went wrong"),
-			wantHttpCode: http.StatusInternalServerError,
+			wantHTTPCode: http.StatusInternalServerError,
 			wantErrCode:  httpresponse.ErrCodeGetTaskFailed,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := "/api/v1/tasks/" + tt.pathID
-			req := httptest.NewRequest(http.MethodGet, path, nil)
-			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(
+				http.MethodGet,
+				"/api/v1/tasks/"+tt.pathID,
+				nil,
+			)
 
-			service := FakeTaskService{
+			service := &FakeTaskService{
 				task: tt.serviceTask,
 				err:  tt.serviceErr,
 			}
-
-			handler := NewTaskHandler(&service)
+			handler := NewTaskHandler(service)
 
 			mux := http.NewServeMux()
-
 			mux.HandleFunc("GET /api/v1/tasks/{id}", handler.GetTask)
+
+			rr := httptest.NewRecorder()
 			mux.ServeHTTP(rr, req)
 
-			if rr.Code != tt.wantHttpCode {
-				t.Fatalf("expected http code: %d, got: %d", tt.wantHttpCode, rr.Code)
-			}
-
 			if tt.wantErrCode != "" {
-				var responseErr httpresponse.ErrorResponse
-				if err := json.NewDecoder(rr.Body).Decode(&responseErr); err != nil {
-					t.Fatalf("failed to decode error response: %v", err)
-				}
-
-				if responseErr.Error.Code != tt.wantErrCode {
-					t.Errorf(
-						"expected error code: %s, got: %s",
-						tt.wantErrCode,
-						responseErr.Error.Code,
-					)
-				}
+				assertJSONErrorResponse(t, rr, tt.wantHTTPCode, tt.wantErrCode)
+				return
 			}
 
-			if tt.wantResponse != nil {
-				var taskResponse GetTaskResponse
-				if err := json.NewDecoder(rr.Body).Decode(&taskResponse); err != nil {
-					t.Fatalf("failed to decode task response: %v", err)
-				}
-
-				if diff := cmp.Diff(*tt.wantResponse, taskResponse); diff != "" {
-					t.Errorf("task response mismatch (-want +got):\n%s", diff)
-				}
+			if rr.Code != tt.wantHTTPCode {
+				t.Fatalf(
+					"HTTP status = %d, want %d; body: %s",
+					rr.Code,
+					tt.wantHTTPCode,
+					rr.Body.String(),
+				)
 			}
 
-			if responseContentType := rr.Header().Get("Content-Type"); responseContentType != "application/json" {
-				t.Errorf("expected json response content type, got: %s", responseContentType)
+			assertJSONContentType(t, rr)
+
+			var gotResponse GetTaskResponse
+			if err := json.NewDecoder(rr.Body).Decode(&gotResponse); err != nil {
+				t.Fatalf("decode task response: %v", err)
 			}
 
+			if diff := cmp.Diff(*tt.wantResponse, gotResponse); diff != "" {
+				t.Errorf("task response mismatch (-want +got):\n%s", diff)
+			}
 		})
 	}
 }
