@@ -108,6 +108,12 @@ func (r *TaskRepository) CreateOrGetByIdempotencyKey(ctx context.Context, t task
 		return task.Task{}, false, fmt.Errorf("insert task: %w", err)
 	}
 
+	existingTask, err := r.GetByIdempotencyKey(ctx, t.ClientID, t.IdempotencyKey)
+
+	return existingTask, false, err
+}
+
+func (r *TaskRepository) GetByIdempotencyKey(ctx context.Context, clientID uuid.UUID, key string) (task.Task, error) {
 	const selectQuery = `
 		SELECT
 			id,
@@ -132,17 +138,17 @@ func (r *TaskRepository) CreateOrGetByIdempotencyKey(ctx context.Context, t task
 		  AND idempotency_key = $2
 	`
 
-	existingTask, err := scanTask(r.db.QueryRow(
-		ctx,
-		selectQuery,
-		t.ClientID,
-		t.IdempotencyKey,
-	))
-	if err != nil {
-		return task.Task{}, false, fmt.Errorf("select existing task: %w", err)
+	existingTask, err := scanTask(r.db.QueryRow(ctx, selectQuery, clientID, key))
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return task.Task{}, task.ErrTaskNotFound
 	}
 
-	return existingTask, false, nil
+	if err != nil {
+		return task.Task{}, fmt.Errorf("select existing task: %w", err)
+	}
+
+	return existingTask, nil
 }
 
 func scanTask(row pgx.Row) (task.Task, error) {

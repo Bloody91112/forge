@@ -8,14 +8,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 )
 
 var (
-	ErrInvalidInput        = errors.New("invalid input")
-	ErrMissingClientID     = errors.New("missing client id in context")
-	ErrIdempotencyConflict = errors.New("idempotency key conflict")
+	ErrInvalidInput         = errors.New("invalid input")
+	ErrMissingClientID      = errors.New("missing client id in context")
+	ErrIdempotencyConflict  = errors.New("idempotency key conflict")
+	ErrTaskTypeNotSupported = errors.New("task not supported")
+	ErrNoActiveWorkers      = errors.New("no active workers found")
 )
 
 const (
@@ -33,14 +36,20 @@ const clientIDKey contextKey = "client_id"
 type Repository interface {
 	CreateOrGetByIdempotencyKey(ctx context.Context, task Task) (Task, bool, error)
 	GetByID(ctx context.Context, taskID uuid.UUID, clientID uuid.UUID) (Task, error)
+	GetByIdempotencyKey(ctx context.Context, clientID uuid.UUID, key string) (Task, error)
+}
+
+type WorkerRepository interface {
+	GetActiveWorkersCapabilities(ctx context.Context) ([][]string, error)
 }
 
 type Service struct {
-	repo Repository
+	repo        Repository
+	workersRepo WorkerRepository
 }
 
-func NewService(repo Repository) *Service {
-	return &Service{repo: repo}
+func NewService(repo Repository, workersRepo WorkerRepository) *Service {
+	return &Service{repo: repo, workersRepo: workersRepo}
 }
 
 func WithClientID(ctx context.Context, id uuid.UUID) context.Context {
@@ -126,6 +135,35 @@ func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error)
 		Status:         StatusQueued,
 		MaxAttempts:    maxAttempts,
 		TimeoutSeconds: timeoutSeconds,
+	}
+
+	existingTask, err := s.repo.GetByIdempotencyKey(ctx, clientID, dto.IdempotencyKey)
+
+	if err == nil {
+		if existingTask.RequestHash != hashStr {
+			return existingTask, ErrIdempotencyConflict
+		}
+
+		return existingTask, nil
+	}
+
+	if !errors.Is(err, ErrTaskNotFound) {
+		return Task{}, fmt.Errorf("get task by idempotency key: %w", err)
+	}
+
+	workersCapabilities, err := s.workersRepo.GetActiveWorkersCapabilities(ctx)
+	if err != nil {
+		return Task{}, fmt.Errorf("get active workers capabilities: %w", err)
+	}
+
+	if len(workersCapabilities) == 0 {
+		return Task{}, ErrNoActiveWorkers
+	}
+
+	for _, workerCapabilities := range workersCapabilities {
+		if !slices.Contains(workerCapabilities, task.Type) {
+			return Task{}, ErrTaskTypeNotSupported
+		}
 	}
 
 	createdTask, created, err := s.repo.CreateOrGetByIdempotencyKey(ctx, task)

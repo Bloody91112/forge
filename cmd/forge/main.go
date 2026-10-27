@@ -70,13 +70,6 @@ func runServer() error {
 	health := handler.HealthHandler{}
 	readiness := handler.NewReadinessHandler(dbPool)
 
-	taskRepo := postgres.NewTaskRepository(dbPool)
-	taskService := task.NewService(taskRepo)
-	taskHandler := handler.NewTaskHandler(taskService)
-
-	clientRepository := postgres.NewClientRepository(dbPool)
-	authService := auth.NewClientService(clientRepository)
-
 	settingsRepo := postgres.NewSettingRepository(dbPool)
 	settingsService := settings.NewService(settingsRepo)
 	bootstrapService := bootstrap.NewService(settingsService)
@@ -85,6 +78,13 @@ func runServer() error {
 	workerService := worker.NewService(workerRepo, bootstrapService)
 	workerHandler := handler.NewWorkerHandler(workerService)
 	workerAuthService := auth.NewWorkerService(workerRepo)
+
+	taskRepo := postgres.NewTaskRepository(dbPool)
+	taskService := task.NewService(taskRepo, workerRepo)
+	taskHandler := handler.NewTaskHandler(taskService)
+
+	clientRepository := postgres.NewClientRepository(dbPool)
+	authService := auth.NewClientService(clientRepository)
 
 	// public
 	mux := http.NewServeMux()

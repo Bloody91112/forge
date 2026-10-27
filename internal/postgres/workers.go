@@ -93,3 +93,29 @@ func (r *WorkerRepository) ExtendLease(ctx context.Context, id uuid.UUID, leaseE
 
 	return nil
 }
+
+func (r *WorkerRepository) GetActiveWorkersCapabilities(ctx context.Context) ([][]string, error) {
+	rows, err := r.db.Query(ctx, "SELECT capabilities FROM workers WHERE lease_expires_at > NOW()")
+	if err != nil {
+		return nil, fmt.Errorf("get active worker capabilities: %w", err)
+	}
+	defer rows.Close()
+
+	var capabilities [][]string
+
+	for rows.Next() {
+		var workerCapabilities []string
+
+		if err := rows.Scan(&workerCapabilities); err != nil {
+			return nil, fmt.Errorf("scan worker capabilities: %w", err)
+		}
+
+		capabilities = append(capabilities, workerCapabilities)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate worker capabilities: %w", err)
+	}
+
+	return capabilities, nil
+}
