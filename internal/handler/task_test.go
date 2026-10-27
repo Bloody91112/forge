@@ -211,7 +211,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 func TestTaskHandler_CreateTask_TooLargeRequestBody(t *testing.T) {
 	var taskInput task.CreateTaskInput
 
-	oneMBPlusString := strings.Repeat("A", (1<<20)+1)
+	oneMBPlusString := strings.Repeat("A", maxTaskRequestBodySize+1)
 	taskInput.Type = oneMBPlusString
 
 	jsonBytes, err := json.Marshal(taskInput)

@@ -294,3 +294,83 @@ func TestService_Create_ThrowsErrorOnClientIDMiss(t *testing.T) {
 		t.Fatalf("expected err: %v, got: %v", ErrMissingClientID, err)
 	}
 }
+
+func TestService_Create_ValidatesLimits(t *testing.T) {
+	tests := []struct {
+		name           string
+		maxAttempts    int64
+		timeoutSeconds int64
+		wantErr        bool
+	}{
+		{
+			name:           "minimum values",
+			maxAttempts:    1,
+			timeoutSeconds: 1,
+		},
+		{
+			name:           "maximum values",
+			maxAttempts:    MaxTaskAttempts,
+			timeoutSeconds: MaxTaskTimeout,
+		},
+		{
+			name:           "max attempts below minimum",
+			maxAttempts:    0,
+			timeoutSeconds: DefaultTaskTimeout,
+			wantErr:        true,
+		},
+		{
+			name:           "max attempts above maximum",
+			maxAttempts:    MaxTaskAttempts + 1,
+			timeoutSeconds: DefaultTaskTimeout,
+			wantErr:        true,
+		},
+		{
+			name:           "timeout below minimum",
+			maxAttempts:    DefaultTaskMaxAttempts,
+			timeoutSeconds: 0,
+			wantErr:        true,
+		},
+		{
+			name:           "timeout above maximum",
+			maxAttempts:    DefaultTaskMaxAttempts,
+			timeoutSeconds: MaxTaskTimeout + 1,
+			wantErr:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &TaskRepositoryStub{
+				created: true,
+			}
+			service := NewService(repo)
+
+			maxAttempts := tt.maxAttempts
+			timeoutSeconds := tt.timeoutSeconds
+
+			ctx := WithClientID(t.Context(), uuid.New())
+
+			_, err := service.Create(ctx, CreateTaskInput{
+				Type:           "email-send",
+				Payload:        []byte(`{"user_id":42}`),
+				IdempotencyKey: uuid.NewString(),
+				MaxAttempts:    &maxAttempts,
+				TimeoutSeconds: &timeoutSeconds,
+			})
+
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidInput) {
+					t.Fatalf(
+						"expected ErrInvalidInput, got %v",
+						err,
+					)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("expected success, got %v", err)
+			}
+		})
+	}
+}

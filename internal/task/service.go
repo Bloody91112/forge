@@ -66,12 +66,22 @@ func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error)
 		timeoutSeconds = *dto.TimeoutSeconds
 	}
 
-	if maxAttempts <= 0 {
-		return Task{}, fmt.Errorf("max_attempts must be greater than zero, got %d: %w", maxAttempts, ErrInvalidInput)
+	if maxAttempts < 1 || maxAttempts > MaxTaskAttempts {
+		return Task{}, fmt.Errorf(
+			"max_attempts must be between 1 and %d, got %d: %w",
+			MaxTaskAttempts,
+			maxAttempts,
+			ErrInvalidInput,
+		)
 	}
 
-	if timeoutSeconds <= 0 {
-		return Task{}, fmt.Errorf("timeout_seconds must be greater than zero, got %d: %w", timeoutSeconds, ErrInvalidInput)
+	if timeoutSeconds < 1 || timeoutSeconds > MaxTaskTimeout {
+		return Task{}, fmt.Errorf(
+			"timeout_seconds must be between 1 and %d, got %d: %w",
+			MaxTaskTimeout,
+			timeoutSeconds,
+			ErrInvalidInput,
+		)
 	}
 
 	if dto.Type == "" {

@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const maxTaskRequestBodySize = 2 << 20
+
 type TaskHandler struct {
 	service     TaskService
 	baseHandler BaseHandler
@@ -41,7 +43,7 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 
 	var taskInput task.CreateTaskInput
 
-	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &taskInput, 1<<20) {
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &taskInput, maxTaskRequestBodySize) {
 		return
 	}
 
