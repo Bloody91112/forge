@@ -28,14 +28,18 @@ type GetTaskResponse struct {
 	FinishedAt   *time.Time         `json:"finished_at"`
 }
 
-type ClaimTaskResponse struct {
+type ClaimTaskItemResponse struct {
 	ID             uuid.UUID       `json:"id"`
 	Type           string          `json:"type"`
 	Payload        json.RawMessage `json:"payload"`
-	AttemptCount   int64           `json:"attempt_count"`
+	AttemptNumber  int64           `json:"attempt_number"`
 	TimeoutSeconds int64           `json:"timeout_seconds"`
 	LeaseToken     uuid.UUID       `json:"lease_token"`
 	LeaseExpiresAt time.Time       `json:"lease_expires_at"`
+}
+
+type ClaimTaskResponse struct {
+	Task ClaimTaskItemResponse `json:"task"`
 }
 
 type TaskErrorResponse struct {
@@ -54,13 +58,15 @@ func newCreateTaskResponse(t task.Task) CreateTaskResponse {
 
 func newClaimTaskResponse(t task.Task) ClaimTaskResponse {
 	return ClaimTaskResponse{
-		ID:             t.ID,
-		Type:           t.Type,
-		Payload:        t.Payload,
-		AttemptCount:   t.AttemptCount,
-		TimeoutSeconds: t.TimeoutSeconds,
-		LeaseToken:     t.LeaseToken,
-		LeaseExpiresAt: *t.LeaseExpiresAt,
+		Task: ClaimTaskItemResponse{
+			ID:             t.ID,
+			Type:           t.Type,
+			Payload:        t.Payload,
+			AttemptNumber:  t.AttemptCount,
+			TimeoutSeconds: t.TimeoutSeconds,
+			LeaseToken:     t.LeaseToken,
+			LeaseExpiresAt: *t.LeaseExpiresAt,
+		},
 	}
 }
 

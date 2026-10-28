@@ -15,13 +15,15 @@ import (
 )
 
 var (
-	ErrInvalidInput         = errors.New("invalid input")
-	ErrMissingClientID      = errors.New("missing client id in context")
-	ErrIdempotencyConflict  = errors.New("idempotency key conflict")
-	ErrTaskTypeNotSupported = errors.New("task not supported")
-	ErrNoActiveWorkers      = errors.New("no active workers found")
-	ErrNoAvailableTasks     = errors.New("no available tasks found")
-	ErrWorkerNotFound       = errors.New("worker not found, not active or has no capabilities")
+	ErrInvalidInput            = errors.New("invalid input")
+	ErrMissingClientID         = errors.New("missing client id in context")
+	ErrIdempotencyConflict     = errors.New("idempotency key conflict")
+	ErrTaskTypeNotSupported    = errors.New("task not supported")
+	ErrNoActiveWorkers         = errors.New("no active workers found")
+	ErrNoAvailableTasks        = errors.New("no available tasks found")
+	ErrWorkerNotFound          = errors.New("worker not found, not active or has no capabilities")
+	ErrInvalidRequestStructure = errors.New("invalid request structure")
+	ErrPayloadTooLarge         = errors.New("payload too large")
 )
 
 const (
@@ -32,6 +34,11 @@ const (
 	MaxPayloadSize         = 1 << 20 // 1 MiB
 	LeaseSeconds           = 30
 )
+
+type CreateResult struct {
+	Task    Task
+	Created bool
+}
 
 type contextKey string
 
@@ -70,7 +77,7 @@ func ClientIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 	return id, true
 }
 
-func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error) {
+func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (CreateResult, error) {
 	var maxAttempts int64 = DefaultTaskMaxAttempts
 	if dto.MaxAttempts != nil {
 		maxAttempts = *dto.MaxAttempts
@@ -82,53 +89,43 @@ func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error)
 	}
 
 	if maxAttempts < 1 || maxAttempts > MaxTaskAttempts {
-		return Task{}, fmt.Errorf(
-			"max_attempts must be between 1 and %d, got %d: %w",
-			MaxTaskAttempts,
-			maxAttempts,
-			ErrInvalidInput,
-		)
+		return CreateResult{}, fmt.Errorf("max_attempts must be between 1 and %d, got %d: %w", MaxTaskAttempts, maxAttempts, ErrInvalidInput)
 	}
 
 	if timeoutSeconds < 1 || timeoutSeconds > MaxTaskTimeout {
-		return Task{}, fmt.Errorf(
-			"timeout_seconds must be between 1 and %d, got %d: %w",
-			MaxTaskTimeout,
-			timeoutSeconds,
-			ErrInvalidInput,
-		)
+		return CreateResult{}, fmt.Errorf("timeout_seconds must be between 1 and %d, got %d: %w", MaxTaskTimeout, timeoutSeconds, ErrInvalidInput)
 	}
 
 	if dto.Type == "" {
-		return Task{}, fmt.Errorf("task type required, got empty string: %w", ErrInvalidInput)
+		return CreateResult{}, fmt.Errorf("task type required, got empty string: %w", ErrInvalidInput)
 	}
 
 	if dto.IdempotencyKey == "" {
-		return Task{}, fmt.Errorf("idempotency key required, got empty string: %w", ErrInvalidInput)
+		return CreateResult{}, fmt.Errorf("idempotency key required, got empty string: %w", ErrInvalidInput)
 	}
 
 	payload := bytes.TrimSpace(dto.Payload)
 
-	if len(payload) == 0 || len(payload) > MaxPayloadSize {
-		return Task{}, fmt.Errorf(
-			"payload must be between 1 byte and %d bytes: %w",
-			MaxPayloadSize,
-			ErrInvalidInput,
-		)
+	if len(payload) == 0 {
+		return CreateResult{}, fmt.Errorf("payload must be a JSON object: %w", ErrInvalidRequestStructure)
+	}
+
+	if len(payload) > MaxPayloadSize {
+		return CreateResult{}, fmt.Errorf("payload exceeds %d bytes: %w", MaxPayloadSize, ErrPayloadTooLarge)
 	}
 
 	if !json.Valid(payload) || payload[0] != '{' {
-		return Task{}, fmt.Errorf("payload must be a JSON object: %w", ErrInvalidInput)
+		return CreateResult{}, fmt.Errorf("payload must be a JSON object: %w", ErrInvalidRequestStructure)
 	}
 
 	hashStr, err := calculateRequestHash(dto.Payload, dto.Type, timeoutSeconds, maxAttempts)
 	if err != nil {
-		return Task{}, fmt.Errorf("calculate request hash: %w", err)
+		return CreateResult{}, fmt.Errorf("calculate request hash: %w", err)
 	}
 
 	clientID, ok := ClientIDFromContext(ctx)
 	if !ok {
-		return Task{}, ErrMissingClientID
+		return CreateResult{}, ErrMissingClientID
 	}
 
 	task := Task{
@@ -147,42 +144,45 @@ func (s *Service) Create(ctx context.Context, dto CreateTaskInput) (Task, error)
 
 	if err == nil {
 		if existingTask.RequestHash != hashStr {
-			return existingTask, ErrIdempotencyConflict
+			return CreateResult{Task: existingTask}, ErrIdempotencyConflict
 		}
 
-		return existingTask, nil
+		return CreateResult{Task: existingTask, Created: false}, nil
 	}
 
 	if !errors.Is(err, ErrTaskNotFound) {
-		return Task{}, fmt.Errorf("get task by idempotency key: %w", err)
+		return CreateResult{}, fmt.Errorf("get task by idempotency key: %w", err)
 	}
 
 	workersCapabilities, err := s.workersRepo.GetActiveWorkersCapabilities(ctx)
 	if err != nil {
-		return Task{}, fmt.Errorf("get active workers capabilities: %w", err)
+		return CreateResult{}, fmt.Errorf("get active workers capabilities: %w", err)
 	}
 
 	if len(workersCapabilities) == 0 {
-		return Task{}, ErrNoActiveWorkers
+		return CreateResult{}, ErrNoActiveWorkers
 	}
 
 	for _, workerCapabilities := range workersCapabilities {
 		if !slices.Contains(workerCapabilities, task.Type) {
-			return Task{}, ErrTaskTypeNotSupported
+			return CreateResult{}, ErrTaskTypeNotSupported
 		}
 	}
 
 	createdTask, created, err := s.repo.CreateOrGetByIdempotencyKey(ctx, task)
 
 	if err != nil {
-		return Task{}, fmt.Errorf("create task in repository: %w", err)
+		return CreateResult{}, fmt.Errorf("create task in repository: %w", err)
 	}
 
 	if !created && createdTask.RequestHash != hashStr {
-		return createdTask, ErrIdempotencyConflict
+		return CreateResult{Task: createdTask}, ErrIdempotencyConflict
 	}
 
-	return createdTask, nil
+	return CreateResult{
+		Task:    createdTask,
+		Created: created,
+	}, nil
 }
 
 func (s *Service) GetByID(ctx context.Context, taskID uuid.UUID) (Task, error) {

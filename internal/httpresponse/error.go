@@ -28,6 +28,7 @@ const (
 	ErrCodeTaskTypeNotSupported       = "task_type_not_supported"
 	ErrCodeNoAvailableTasks           = "no_available_tasks"
 	ErrCodeFailedToClaimTask          = "claim_task_failed"
+	ErrCodePayloadTooLarge            = "payload_too_large"
 )
 
 type ErrorResponse struct {

@@ -19,7 +19,7 @@ type TaskHandler struct {
 }
 
 type TaskService interface {
-	Create(ctx context.Context, dto task.CreateTaskInput) (task.Task, error)
+	Create(ctx context.Context, dto task.CreateTaskInput) (task.CreateResult, error)
 	GetByID(ctx context.Context, taskID uuid.UUID) (task.Task, error)
 	Claim(ctx context.Context, dto task.ClaimTaskInput) (task.Task, error)
 }
@@ -49,10 +49,20 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskInput.IdempotencyKey = idempotencyKey
-	createdTask, err := h.service.Create(r.Context(), taskInput)
+	createResult, err := h.service.Create(r.Context(), taskInput)
+
+	if errors.Is(err, task.ErrPayloadTooLarge) {
+		httpresponse.ResponseError(w, http.StatusRequestEntityTooLarge, httpresponse.ErrCodePayloadTooLarge, "Payload exceeds maximum size of 1 MiB")
+		return
+	}
+
+	if errors.Is(err, task.ErrInvalidRequestStructure) {
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidPayload, "Invalid request structure")
+		return
+	}
 
 	if errors.Is(err, task.ErrInvalidInput) {
-		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
+		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
 		return
 	}
 
@@ -83,7 +93,12 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusAccepted, "created task", newCreateTaskResponse(createdTask)); err != nil {
+	status := http.StatusAccepted
+	if !createResult.Created {
+		status = http.StatusOK
+	}
+
+	if err := h.baseHandler.EncodeJSONResponse(w, status, "created task", newCreateTaskResponse(createResult.Task)); err != nil {
 		log.Print(err)
 	}
 }
