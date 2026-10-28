@@ -461,8 +461,11 @@ func TestService_CreateWithConcurrentDifferentRequestReturnsConflict(t *testing.
 		t.Fatalf("error = %v, want %v", err, ErrIdempotencyConflict)
 	}
 
-	if diff := cmp.Diff(existingTask, got); diff != "" {
+	if diff := cmp.Diff(existingTask, got.Task, cmpopts.IgnoreFields(Task{}, "ID")); diff != "" {
 		t.Errorf("returned task mismatch (-want +got):\n%s", diff)
+	}
+	if got.Created {
+		t.Error("Created = true, want false")
 	}
 }
 
@@ -682,8 +685,9 @@ func TestService_Create_ValidatesLimits(t *testing.T) {
 
 func TestService_Create_ValidatesRequiredFields(t *testing.T) {
 	tests := []struct {
-		name  string
-		input func() CreateTaskInput
+		name    string
+		input   func() CreateTaskInput
+		wantErr error
 	}{
 		{
 			name: "empty task type",
@@ -692,6 +696,7 @@ func TestService_Create_ValidatesRequiredFields(t *testing.T) {
 				input.Type = ""
 				return input
 			},
+			wantErr: ErrInvalidInput,
 		},
 		{
 			name: "empty idempotency key",
@@ -700,6 +705,7 @@ func TestService_Create_ValidatesRequiredFields(t *testing.T) {
 				input.IdempotencyKey = ""
 				return input
 			},
+			wantErr: ErrInvalidInput,
 		},
 		{
 			name: "empty payload",
@@ -708,6 +714,7 @@ func TestService_Create_ValidatesRequiredFields(t *testing.T) {
 				input.Payload = nil
 				return input
 			},
+			wantErr: ErrInvalidRequestStructure,
 		},
 		{
 			name: "invalid JSON payload",
@@ -716,6 +723,7 @@ func TestService_Create_ValidatesRequiredFields(t *testing.T) {
 				input.Payload = []byte(`{"user_id":`)
 				return input
 			},
+			wantErr: ErrInvalidRequestStructure,
 		},
 		{
 			name: "JSON array payload",
@@ -724,6 +732,7 @@ func TestService_Create_ValidatesRequiredFields(t *testing.T) {
 				input.Payload = []byte(`[1,2,3]`)
 				return input
 			},
+			wantErr: ErrInvalidRequestStructure,
 		},
 	}
 
@@ -734,8 +743,8 @@ func TestService_Create_ValidatesRequiredFields(t *testing.T) {
 			service := NewService(repo, workersRepo)
 
 			_, err := service.Create(validCreateContext(t), tt.input())
-			if !errors.Is(err, ErrInvalidInput) {
-				t.Fatalf("error = %v, want %v", err, ErrInvalidInput)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
 
 			if repo.lookupCalled {
