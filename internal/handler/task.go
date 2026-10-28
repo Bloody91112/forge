@@ -144,7 +144,7 @@ func (h *TaskHandler) ClaimTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusAccepted, "claim task", newClaimTaskResponse(claimedTask)); err != nil {
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusOK, "claim task", newClaimTaskResponse(claimedTask)); err != nil {
 		log.Print(err)
 	}
 

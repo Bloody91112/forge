@@ -186,10 +186,26 @@ func (r *TaskRepository) FindAndClaimForWorker(ctx context.Context, workerID uui
 		    started_at = COALESCE(started_at, NOW())
 		WHERE id = $4
 		RETURNING
-		    id, client_id, idempotency_key, request_hash, type, payload,
-		    status, result, error_code, error_message, attempt_count,
-		    max_attempts, timeout_seconds, created_at, available_at,
-		    started_at, finished_at, lease_owner, lease_token, lease_expires_at
+		    id, 
+		    client_id, 
+		    idempotency_key, 
+		    request_hash, 
+		    type, 
+		    payload,
+		    status, 
+		    result, 
+		    error_code, 
+		    error_message, 
+		    attempt_count,
+		    max_attempts, 
+		    timeout_seconds, 
+		    lease_owner, 
+		    lease_token, 
+		    lease_expires_at,
+		    created_at, 
+		    available_at,
+		    started_at, 
+		    finished_at
 	`
 
 	claimedTask, err := scanTask(tx.QueryRow(ctx, updateQuery, task.StatusRunning, workerID, leaseSeconds, taskID))
