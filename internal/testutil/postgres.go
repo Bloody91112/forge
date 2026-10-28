@@ -77,7 +77,7 @@ func OpenPostgres(t *testing.T, cleanBeforeTest bool) (*pgxpool.Pool, error) {
 	}
 
 	if cleanBeforeTest {
-		_, err := pool.Exec(t.Context(), "TRUNCATE TABLE tasks, clients, forge_settings, workers CASCADE;")
+		_, err := pool.Exec(t.Context(), "TRUNCATE TABLE tasks, task_attempts, clients, forge_settings, workers CASCADE;")
 		if err != nil {
 			return nil, fmt.Errorf("failed to truncate test db: %w", err)
 		}

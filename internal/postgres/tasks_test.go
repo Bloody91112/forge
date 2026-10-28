@@ -222,6 +222,96 @@ func TestTaskRepository_GetByID_ReturnsErrWhenTaskBelongsToAnotherClient(t *test
 	}
 }
 
+func TestTaskRepository_FindAndClaimForWorker(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+
+	workerID := uuid.New()
+	_, err := db.Exec(
+		t.Context(),
+		`INSERT INTO workers (
+			id, token_hash, protocol_version, capabilities, lease_expires_at
+		) VALUES ($1, $2, $3, $4::jsonb, NOW() + INTERVAL '1 hour')`,
+		workerID,
+		"test-token-hash",
+		"1",
+		`["email-send"]`,
+	)
+	if err != nil {
+		t.Fatalf("insert worker: %v", err)
+	}
+
+	expected := newTestTask(clientID)
+	expected.Type = "email-send"
+
+	if _, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expected); err != nil {
+		t.Fatalf("CreateOrGetByIdempotencyKey() error = %v", err)
+	} else if !created {
+		t.Fatal("expected task to be created")
+	}
+
+	got, err := repo.FindAndClaimForWorker(
+		t.Context(),
+		workerID,
+		[]string{"email-send"},
+		30,
+	)
+	if err != nil {
+		t.Fatalf("FindAndClaimForWorker() error = %v", err)
+	}
+
+	if got.ID != expected.ID {
+		t.Errorf("task ID = %s, want %s", got.ID, expected.ID)
+	}
+	if got.Status != task.StatusRunning {
+		t.Errorf("task status = %q, want %q", got.Status, task.StatusRunning)
+	}
+	if got.AttemptCount != 1 {
+		t.Errorf("attempt count = %d, want 1", got.AttemptCount)
+	}
+	if got.LeaseOwner != workerID {
+		t.Errorf("lease owner = %s, want %s", got.LeaseOwner, workerID)
+	}
+	if got.LeaseToken == uuid.Nil {
+		t.Error("lease token must not be nil")
+	}
+	if got.LeaseExpiresAt == nil {
+		t.Fatal("lease expiration must be set")
+	}
+
+	var attemptCount int
+	err = db.QueryRow(
+		t.Context(),
+		`SELECT COUNT(*)
+		 FROM task_attempts
+		 WHERE task_id = $1 AND worker_id = $2 AND attempt_number = 1`,
+		expected.ID,
+		workerID,
+	).Scan(&attemptCount)
+	if err != nil {
+		t.Fatalf("count task attempts: %v", err)
+	}
+	if attemptCount != 1 {
+		t.Errorf("task attempt rows = %d, want 1", attemptCount)
+	}
+}
+
+func TestTaskRepository_FindAndClaimForWorker_NoAvailableTasks(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	_, err := repo.FindAndClaimForWorker(
+		t.Context(),
+		uuid.New(),
+		[]string{"email-send"},
+		30,
+	)
+	if !errors.Is(err, task.ErrNoAvailableTasks) {
+		t.Fatalf("error = %v, want %v", err, task.ErrNoAvailableTasks)
+	}
+}
+
 func openTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 

@@ -3,7 +3,9 @@ package task
 import (
 	"context"
 	"errors"
+	"forge/internal/worker"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -28,6 +30,13 @@ type taskRepositoryStub struct {
 	createCreated bool
 	createErr     error
 	createCalled  bool
+
+	claimTask         *Task
+	claimErr          error
+	claimCalled       bool
+	claimWorkerID     uuid.UUID
+	claimCapabilities []string
+	claimLeaseSeconds int
 }
 
 func (r *taskRepositoryStub) CreateOrGetByIdempotencyKey(
@@ -83,10 +92,36 @@ func (r *taskRepositoryStub) GetByIdempotencyKey(
 	return Task{}, ErrTaskNotFound
 }
 
+func (r *taskRepositoryStub) FindAndClaimForWorker(
+	_ context.Context,
+	workerID uuid.UUID,
+	capabilities []string,
+	leaseSeconds int,
+) (Task, error) {
+	r.claimCalled = true
+	r.claimWorkerID = workerID
+	r.claimCapabilities = capabilities
+	r.claimLeaseSeconds = leaseSeconds
+
+	if r.claimErr != nil {
+		return Task{}, r.claimErr
+	}
+
+	if r.claimTask != nil {
+		return *r.claimTask, nil
+	}
+
+	return Task{}, ErrNoAvailableTasks
+}
+
 type workerRepositoryStub struct {
-	capabilities [][]string
-	err          error
-	called       bool
+	capabilities                [][]string
+	err                         error
+	called                      bool
+	workerCapabilities          []string
+	getWorkerCapabilitiesErr    error
+	getWorkerCapabilitiesCalled bool
+	gotWorkerID                 uuid.UUID
 }
 
 func (r *workerRepositoryStub) GetActiveWorkersCapabilities(
@@ -99,6 +134,20 @@ func (r *workerRepositoryStub) GetActiveWorkersCapabilities(
 	}
 
 	return r.capabilities, nil
+}
+
+func (r *workerRepositoryStub) GetActiveWorkerCapabilities(
+	_ context.Context,
+	workerID uuid.UUID,
+) ([]string, error) {
+	r.getWorkerCapabilitiesCalled = true
+	r.gotWorkerID = workerID
+
+	if r.getWorkerCapabilitiesErr != nil {
+		return nil, r.getWorkerCapabilitiesErr
+	}
+
+	return r.workerCapabilities, nil
 }
 
 func newServiceWithCompatibleWorker(
@@ -745,5 +794,187 @@ func TestService_CreateRequestHashIncludesAllRequestFields(t *testing.T) {
 				t.Fatal("expected request hash to change")
 			}
 		})
+	}
+}
+
+func TestService_Claim(t *testing.T) {
+	workerID := uuid.New()
+	leaseExpiresAt := time.Now().Add(time.Duration(LeaseSeconds) * time.Second)
+
+	expected := Task{
+		ID:             uuid.New(),
+		Type:           "email-send",
+		Payload:        []byte(`{"user_id":42}`),
+		Status:         StatusRunning,
+		AttemptCount:   1,
+		TimeoutSeconds: 22,
+		LeaseOwner:     workerID,
+		LeaseToken:     uuid.New(),
+		LeaseExpiresAt: &leaseExpiresAt,
+	}
+
+	repo := &taskRepositoryStub{claimTask: &expected}
+	workersRepo := &workerRepositoryStub{
+		workerCapabilities: []string{"email-send", "report-generate"},
+	}
+	service := NewService(repo, workersRepo)
+
+	ctx := worker.WithID(t.Context(), workerID)
+
+	got, err := service.Claim(ctx, ClaimTaskInput{WorkerID: workerID})
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+
+	if diff := cmp.Diff(expected, got); diff != "" {
+		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	}
+
+	if !workersRepo.getWorkerCapabilitiesCalled {
+		t.Error("expected worker capabilities to be fetched")
+	}
+
+	if workersRepo.gotWorkerID != workerID {
+		t.Errorf("worker repository ID = %s, want %s", workersRepo.gotWorkerID, workerID)
+	}
+
+	if !repo.claimCalled {
+		t.Fatal("expected FindAndClaimForWorker to be called")
+	}
+
+	if repo.claimWorkerID != workerID {
+		t.Errorf("claimed worker ID = %s, want %s", repo.claimWorkerID, workerID)
+	}
+
+	if diff := cmp.Diff(workersRepo.workerCapabilities, repo.claimCapabilities); diff != "" {
+		t.Errorf("capabilities mismatch (-want +got):\n%s", diff)
+	}
+
+	if repo.claimLeaseSeconds != LeaseSeconds {
+		t.Errorf("lease seconds = %d, want %d", repo.claimLeaseSeconds, LeaseSeconds)
+	}
+}
+
+func TestService_ClaimRejectsNilWorkerID(t *testing.T) {
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{}
+	service := NewService(repo, workersRepo)
+
+	_, err := service.Claim(t.Context(), ClaimTaskInput{})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidInput)
+	}
+
+	if workersRepo.getWorkerCapabilitiesCalled {
+		t.Error("worker repository must not be called")
+	}
+
+	if repo.claimCalled {
+		t.Error("task repository must not be called")
+	}
+}
+
+func TestService_ClaimWithoutWorkerIDInContext(t *testing.T) {
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{}
+	service := NewService(repo, workersRepo)
+
+	_, err := service.Claim(
+		t.Context(),
+		ClaimTaskInput{WorkerID: uuid.New()},
+	)
+	if !errors.Is(err, worker.ErrMissingWorkerID) {
+		t.Fatalf("error = %v, want %v", err, worker.ErrMissingWorkerID)
+	}
+
+	if workersRepo.getWorkerCapabilitiesCalled {
+		t.Error("worker repository must not be called")
+	}
+
+	if repo.claimCalled {
+		t.Error("task repository must not be called")
+	}
+}
+
+func TestService_ClaimRejectsWorkerIDMismatch(t *testing.T) {
+	contextWorkerID := uuid.New()
+	inputWorkerID := uuid.New()
+
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{}
+	service := NewService(repo, workersRepo)
+
+	ctx := worker.WithID(t.Context(), contextWorkerID)
+
+	_, err := service.Claim(ctx, ClaimTaskInput{WorkerID: inputWorkerID})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidInput)
+	}
+
+	if workersRepo.getWorkerCapabilitiesCalled {
+		t.Error("worker repository must not be called")
+	}
+
+	if repo.claimCalled {
+		t.Error("task repository must not be called")
+	}
+}
+
+func TestService_ClaimPropagatesWorkerRepositoryError(t *testing.T) {
+	workerID := uuid.New()
+	repositoryErr := errors.New("database unavailable")
+
+	repo := &taskRepositoryStub{}
+	workersRepo := &workerRepositoryStub{
+		getWorkerCapabilitiesErr: repositoryErr,
+	}
+	service := NewService(repo, workersRepo)
+
+	ctx := worker.WithID(t.Context(), workerID)
+
+	_, err := service.Claim(ctx, ClaimTaskInput{WorkerID: workerID})
+	if !errors.Is(err, repositoryErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, repositoryErr)
+	}
+
+	if repo.claimCalled {
+		t.Error("task repository must not be called after worker repository failure")
+	}
+}
+
+func TestService_ClaimPropagatesNoAvailableTasks(t *testing.T) {
+	workerID := uuid.New()
+
+	repo := &taskRepositoryStub{
+		claimErr: ErrNoAvailableTasks,
+	}
+	workersRepo := &workerRepositoryStub{
+		workerCapabilities: []string{"email-send"},
+	}
+	service := NewService(repo, workersRepo)
+
+	ctx := worker.WithID(t.Context(), workerID)
+
+	_, err := service.Claim(ctx, ClaimTaskInput{WorkerID: workerID})
+	if !errors.Is(err, ErrNoAvailableTasks) {
+		t.Fatalf("error = %v, want %v", err, ErrNoAvailableTasks)
+	}
+}
+
+func TestService_ClaimPropagatesRepositoryError(t *testing.T) {
+	workerID := uuid.New()
+	repositoryErr := errors.New("claim query failed")
+
+	repo := &taskRepositoryStub{claimErr: repositoryErr}
+	workersRepo := &workerRepositoryStub{
+		workerCapabilities: []string{"email-send"},
+	}
+	service := NewService(repo, workersRepo)
+
+	ctx := worker.WithID(t.Context(), workerID)
+
+	_, err := service.Claim(ctx, ClaimTaskInput{WorkerID: workerID})
+	if !errors.Is(err, repositoryErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, repositoryErr)
 	}
 }

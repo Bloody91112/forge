@@ -21,6 +21,10 @@ type FakeTaskService struct {
 	task        task.Task
 	err         error
 	createInput task.CreateTaskInput
+
+	claimTask  task.Task
+	claimErr   error
+	claimInput task.ClaimTaskInput
 }
 
 func (s *FakeTaskService) GetByID(ctx context.Context, taskID uuid.UUID) (task.Task, error) {
@@ -30,6 +34,11 @@ func (s *FakeTaskService) GetByID(ctx context.Context, taskID uuid.UUID) (task.T
 func (s *FakeTaskService) Create(ctx context.Context, dto task.CreateTaskInput) (task.Task, error) {
 	s.createInput = dto
 	return s.task, s.err
+}
+
+func (s *FakeTaskService) Claim(ctx context.Context, dto task.ClaimTaskInput) (task.Task, error) {
+	s.claimInput = dto
+	return s.claimTask, s.claimErr
 }
 
 func TestTaskHandler_CreateTask(t *testing.T) {
@@ -358,6 +367,137 @@ func TestTaskHandler_GetTask(t *testing.T) {
 
 			if diff := cmp.Diff(*tt.wantResponse, gotResponse); diff != "" {
 				t.Errorf("task response mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestTaskHandler_ClaimTask(t *testing.T) {
+	workerID := uuid.New()
+	taskID := uuid.New()
+	leaseToken := uuid.New()
+	leaseExpiresAt := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+
+	claimedTask := task.Task{
+		ID:             taskID,
+		Type:           "email-send",
+		Payload:        json.RawMessage(`{"user_id":42}`),
+		AttemptCount:   1,
+		TimeoutSeconds: 22,
+		LeaseToken:     leaseToken,
+		LeaseExpiresAt: &leaseExpiresAt,
+	}
+
+	tests := []struct {
+		name         string
+		body         string
+		serviceTask  task.Task
+		serviceErr   error
+		wantHTTPCode int
+		wantErrCode  string
+	}{
+		{
+			name:         "invalid content type",
+			body:         `{"worker_id":"` + workerID.String() + `"}`,
+			wantHTTPCode: http.StatusUnsupportedMediaType,
+			wantErrCode:  httpresponse.ErrCodeMediaTypeError,
+		},
+		{
+			name:         "invalid JSON",
+			body:         `{"worker_id":`,
+			wantHTTPCode: http.StatusBadRequest,
+			wantErrCode:  httpresponse.ErrCodeInvalidJSONPayload,
+		},
+		{
+			name:         "invalid worker ID",
+			body:         `{}`,
+			serviceErr:   task.ErrInvalidInput,
+			wantHTTPCode: http.StatusBadRequest,
+			wantErrCode:  httpresponse.ErrCodeInvalidPayload,
+		},
+		{
+			name:         "no available tasks",
+			body:         `{"worker_id":"` + workerID.String() + `"}`,
+			serviceErr:   task.ErrNoAvailableTasks,
+			wantHTTPCode: http.StatusNoContent,
+		},
+		{
+			name:         "unknown service error",
+			body:         `{"worker_id":"` + workerID.String() + `"}`,
+			serviceErr:   errors.New("database unavailable"),
+			wantHTTPCode: http.StatusInternalServerError,
+			wantErrCode:  httpresponse.ErrCodeFailedToClaimTask,
+		},
+		{
+			name:         "success",
+			body:         `{"worker_id":"` + workerID.String() + `"}`,
+			serviceTask:  claimedTask,
+			wantHTTPCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/internal/v1/tasks/claim",
+				strings.NewReader(tt.body),
+			)
+
+			if tt.name == "invalid content type" {
+				req.Header.Set("Content-Type", "text/plain")
+			} else {
+				req.Header.Set("Content-Type", "application/json")
+			}
+
+			service := &FakeTaskService{
+				claimTask: tt.serviceTask,
+				claimErr:  tt.serviceErr,
+			}
+			handler := NewTaskHandler(service)
+
+			rr := httptest.NewRecorder()
+			handler.ClaimTask(rr, req)
+
+			if rr.Code != tt.wantHTTPCode {
+				t.Fatalf(
+					"HTTP status = %d, want %d; body: %s",
+					rr.Code,
+					tt.wantHTTPCode,
+					rr.Body.String(),
+				)
+			}
+
+			if tt.wantErrCode != "" {
+				assertJSONErrorResponse(t, rr, tt.wantHTTPCode, tt.wantErrCode)
+				return
+			}
+
+			if tt.wantHTTPCode == http.StatusNoContent {
+				if rr.Body.Len() != 0 {
+					t.Errorf("204 response body = %q, want empty body", rr.Body.String())
+				}
+				return
+			}
+
+			assertJSONContentType(t, rr)
+
+			if service.claimInput.WorkerID != workerID {
+				t.Errorf(
+					"service worker ID = %s, want %s",
+					service.claimInput.WorkerID,
+					workerID,
+				)
+			}
+
+			var got ClaimTaskResponse
+			if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+				t.Fatalf("decode claim response: %v", err)
+			}
+
+			want := newClaimTaskResponse(claimedTask)
+			if diff := cmp.Diff(want, got); diff != "" {
+				t.Errorf("claim response mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
