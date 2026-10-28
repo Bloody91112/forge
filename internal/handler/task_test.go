@@ -147,6 +147,28 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			wantHTTPCode: http.StatusAccepted,
 			wantResponse: wantResponse,
 		},
+		{
+			name: "no active workers",
+			headers: map[string]string{
+				"Content-Type":    "application/json",
+				"Idempotency-Key": idempotencyKey,
+			},
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
+			serviceErr:   task.ErrNoActiveWorkers,
+			wantHTTPCode: http.StatusServiceUnavailable,
+			wantErrCode:  httpresponse.ErrCodeNoActiveWorkers,
+		},
+		{
+			name: "task type not supported",
+			headers: map[string]string{
+				"Content-Type":    "application/json",
+				"Idempotency-Key": idempotencyKey,
+			},
+			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
+			serviceErr:   task.ErrTaskTypeNotSupported,
+			wantHTTPCode: http.StatusUnprocessableEntity,
+			wantErrCode:  httpresponse.ErrCodeTaskTypeNotSupported,
+		},
 	}
 
 	for _, tt := range tests {
