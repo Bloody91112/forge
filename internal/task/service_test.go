@@ -296,8 +296,12 @@ func TestService_Create(t *testing.T) {
 
 	want := expectedTaskForInput(t, input, clientID)
 
-	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(Task{}, "ID")); diff != "" {
+	if diff := cmp.Diff(want, got.Task, cmpopts.IgnoreFields(Task{}, "ID")); diff != "" {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	}
+
+	if !got.Created {
+		t.Error("Created = false, want true")
 	}
 
 	if !repo.lookupCalled {
@@ -337,8 +341,12 @@ func TestService_CreateWithDefaultFields(t *testing.T) {
 
 	want := expectedTaskForInput(t, input, clientID)
 
-	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(Task{}, "ID")); diff != "" {
+	if diff := cmp.Diff(want, got.Task, cmpopts.IgnoreFields(Task{}, "ID")); diff != "" {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	}
+
+	if !got.Created {
+		t.Error("Created = false, want true")
 	}
 }
 
@@ -358,8 +366,12 @@ func TestService_CreateExistingIdempotencyKeyReturnsTaskWithoutCheckingWorkers(t
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if diff := cmp.Diff(existingTask, got); diff != "" {
+	if diff := cmp.Diff(existingTask, got.Task); diff != "" {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	}
+
+	if got.Created {
+		t.Error("Created = true, want false for existing task")
 	}
 
 	if workersRepo.called {
@@ -388,8 +400,12 @@ func TestService_CreateExistingIdempotencyKeyWithDifferentHashReturnsConflict(t 
 		t.Fatalf("error = %v, want %v", err, ErrIdempotencyConflict)
 	}
 
-	if diff := cmp.Diff(existingTask, got); diff != "" {
+	if diff := cmp.Diff(existingTask, got.Task); diff != "" {
 		t.Errorf("returned task mismatch (-want +got):\n%s", diff)
+	}
+
+	if got.Created {
+		t.Error("Created = true, want false for idempotency conflict")
 	}
 
 	if workersRepo.called {
@@ -416,8 +432,12 @@ func TestService_CreateWithConcurrentIdempotencyConflict(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if diff := cmp.Diff(existingTask, got); diff != "" {
+	if diff := cmp.Diff(existingTask, got.Task); diff != "" {
 		t.Errorf("task mismatch (-want +got):\n%s", diff)
+	}
+
+	if got.Created {
+		t.Error("Created = true, want false for concurrent idempotent request")
 	}
 
 	if !repo.createCalled {
@@ -504,8 +524,12 @@ func TestService_CreateAcceptsTaskWhenAllActiveWorkersAreCompatible(t *testing.T
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if got.Type != input.Type {
-		t.Errorf("task type = %q, want %q", got.Type, input.Type)
+	if got.Task.Type != input.Type {
+		t.Errorf("task type = %q, want %q", got.Task.Type, input.Type)
+	}
+
+	if !got.Created {
+		t.Error("Created = false, want true")
 	}
 
 	if !repo.createCalled {

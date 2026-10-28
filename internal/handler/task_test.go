@@ -18,9 +18,10 @@ import (
 )
 
 type FakeTaskService struct {
-	task        task.Task
-	err         error
-	createInput task.CreateTaskInput
+	task          task.Task
+	err           error
+	createInput   task.CreateTaskInput
+	createCreated bool
 
 	claimTask  task.Task
 	claimErr   error
@@ -31,9 +32,13 @@ func (s *FakeTaskService) GetByID(ctx context.Context, taskID uuid.UUID) (task.T
 	return s.task, s.err
 }
 
-func (s *FakeTaskService) Create(ctx context.Context, dto task.CreateTaskInput) (task.Task, error) {
+func (s *FakeTaskService) Create(ctx context.Context, dto task.CreateTaskInput) (task.CreateResult, error) {
 	s.createInput = dto
-	return s.task, s.err
+
+	return task.CreateResult{
+		Task:    s.task,
+		Created: s.createCreated,
+	}, s.err
 }
 
 func (s *FakeTaskService) Claim(ctx context.Context, dto task.ClaimTaskInput) (task.Task, error) {
@@ -53,14 +58,15 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 	wantResponse := newCreateTaskResponse(wantTask)
 
 	tests := []struct {
-		name         string
-		headers      map[string]string
-		body         string
-		serviceErr   error
-		serviceTask  task.Task
-		wantResponse CreateTaskResponse
-		wantHTTPCode int
-		wantErrCode  string
+		name           string
+		headers        map[string]string
+		body           string
+		serviceErr     error
+		serviceTask    task.Task
+		wantResponse   CreateTaskResponse
+		wantHTTPCode   int
+		wantErrCode    string
+		serviceCreated bool
 	}{
 		{
 			name: "invalid content type",
@@ -109,7 +115,7 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			},
 			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
 			serviceErr:   task.ErrInvalidInput,
-			wantHTTPCode: http.StatusBadRequest,
+			wantHTTPCode: http.StatusUnprocessableEntity,
 			wantErrCode:  httpresponse.ErrCodeInvalidPayload,
 		},
 		{
@@ -151,10 +157,11 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 				"Content-Type":    "application/json",
 				"Idempotency-Key": idempotencyKey,
 			},
-			body:         `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
-			serviceTask:  wantTask,
-			wantHTTPCode: http.StatusAccepted,
-			wantResponse: wantResponse,
+			body:           `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
+			serviceTask:    wantTask,
+			wantHTTPCode:   http.StatusAccepted,
+			wantResponse:   wantResponse,
+			serviceCreated: true,
 		},
 		{
 			name: "no active workers",
@@ -178,6 +185,40 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			wantHTTPCode: http.StatusUnprocessableEntity,
 			wantErrCode:  httpresponse.ErrCodeTaskTypeNotSupported,
 		},
+		{
+			name: "invalid request structure",
+			headers: map[string]string{
+				"Content-Type":    "application/json",
+				"Idempotency-Key": idempotencyKey,
+			},
+			body:         `{"type":"send-email","payload":{}}`,
+			serviceErr:   task.ErrInvalidRequestStructure,
+			wantHTTPCode: http.StatusBadRequest,
+			wantErrCode:  httpresponse.ErrCodeInvalidPayload,
+		},
+		{
+			name: "payload too large",
+			headers: map[string]string{
+				"Content-Type":    "application/json",
+				"Idempotency-Key": idempotencyKey,
+			},
+			body:         `{"type":"send-email","payload":{}}`,
+			serviceErr:   task.ErrPayloadTooLarge,
+			wantHTTPCode: http.StatusRequestEntityTooLarge,
+			wantErrCode:  httpresponse.ErrCodePayloadTooLarge,
+		},
+		{
+			name: "existing idempotent task",
+			headers: map[string]string{
+				"Content-Type":    "application/json",
+				"Idempotency-Key": idempotencyKey,
+			},
+			body:           `{"type":"send-email","payload":{"recipient":"user@example.com"}}`,
+			serviceTask:    wantTask,
+			serviceCreated: false,
+			wantHTTPCode:   http.StatusOK,
+			wantResponse:   wantResponse,
+		},
 	}
 
 	for _, tt := range tests {
@@ -193,8 +234,9 @@ func TestTaskHandler_CreateTask(t *testing.T) {
 			}
 
 			service := &FakeTaskService{
-				task: tt.serviceTask,
-				err:  tt.serviceErr,
+				task:          tt.serviceTask,
+				err:           tt.serviceErr,
+				createCreated: tt.serviceCreated,
 			}
 			handler := NewTaskHandler(service)
 
