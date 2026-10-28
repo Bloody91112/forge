@@ -20,3 +20,7 @@ CREATE TABLE tasks
 
     UNIQUE (client_id, idempotency_key)
 );
+
+CREATE INDEX idx_tasks_claim
+    ON tasks (type, available_at, created_at)
+    WHERE status = 'queued';

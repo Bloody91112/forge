@@ -312,6 +312,220 @@ func TestTaskRepository_FindAndClaimForWorker_NoAvailableTasks(t *testing.T) {
 	}
 }
 
+func TestTaskRepository_FindAndClaimForWorker_Concurrent(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+
+	workerIDs := []uuid.UUID{uuid.New(), uuid.New()}
+	for _, workerID := range workerIDs {
+		_, err := db.Exec(
+			t.Context(),
+			`INSERT INTO workers (
+				id, token_hash, protocol_version, capabilities, lease_expires_at
+			) VALUES ($1, $2, $3, $4::jsonb, NOW() + INTERVAL '1 hour')`,
+			workerID,
+			"test-token-hash",
+			"1",
+			`["email-send"]`,
+		)
+		if err != nil {
+			t.Fatalf("insert worker: %v", err)
+		}
+	}
+
+	firstTask := newTestTask(clientID)
+	secondTask := newTestTask(clientID)
+
+	for _, taskToCreate := range []task.Task{firstTask, secondTask} {
+		if _, created, err := repo.CreateOrGetByIdempotencyKey(
+			t.Context(), taskToCreate,
+		); err != nil {
+			t.Fatalf("create task: %v", err)
+		} else if !created {
+			t.Fatal("expected task to be created")
+		}
+	}
+
+	type claimResult struct {
+		task task.Task
+		err  error
+	}
+
+	start := make(chan struct{})
+	results := make(chan claimResult, len(workerIDs))
+
+	for _, workerID := range workerIDs {
+		go func(workerID uuid.UUID) {
+			<-start
+
+			claimed, err := repo.FindAndClaimForWorker(
+				t.Context(),
+				workerID,
+				[]string{"email-send"},
+				30,
+			)
+			results <- claimResult{task: claimed, err: err}
+		}(workerID)
+	}
+
+	close(start)
+
+	claimedIDs := make(map[uuid.UUID]bool)
+	for range workerIDs {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("FindAndClaimForWorker() error = %v", result.err)
+		}
+
+		if result.task.Status != task.StatusRunning {
+			t.Errorf("task status = %q, want %q",
+				result.task.Status, task.StatusRunning)
+		}
+		if claimedIDs[result.task.ID] {
+			t.Errorf("task %s was claimed more than once", result.task.ID)
+		}
+		claimedIDs[result.task.ID] = true
+	}
+
+	if len(claimedIDs) != 2 {
+		t.Fatalf("number of distinct claimed tasks = %d, want 2", len(claimedIDs))
+	}
+
+	var attemptCount int
+	err := db.QueryRow(
+		t.Context(),
+		`SELECT COUNT(*)
+		 FROM task_attempts
+		 WHERE task_id IN ($1, $2)`,
+		firstTask.ID,
+		secondTask.ID,
+	).Scan(&attemptCount)
+	if err != nil {
+		t.Fatalf("count task attempts: %v", err)
+	}
+	if attemptCount != 2 {
+		t.Errorf("task attempt rows = %d, want 2", attemptCount)
+	}
+}
+
+func TestTaskRepository_FindAndClaimForWorker_RepeatedClaim(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+
+	workerID := uuid.New()
+	_, err := db.Exec(
+		t.Context(),
+		`INSERT INTO workers (
+			id, token_hash, protocol_version, capabilities, lease_expires_at
+		) VALUES ($1, $2, $3, $4::jsonb, NOW() + INTERVAL '1 hour')`,
+		workerID,
+		"test-token-hash",
+		"1",
+		`["email-send"]`,
+	)
+	if err != nil {
+		t.Fatalf("insert worker: %v", err)
+	}
+
+	expected := newTestTask(clientID)
+	if _, created, err := repo.CreateOrGetByIdempotencyKey(
+		t.Context(), expected,
+	); err != nil {
+		t.Fatalf("create task: %v", err)
+	} else if !created {
+		t.Fatal("expected task to be created")
+	}
+
+	first, err := repo.FindAndClaimForWorker(
+		t.Context(), workerID, []string{"email-send"}, 30,
+	)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if first.AttemptCount != 1 {
+		t.Fatalf("first attempt count = %d, want 1", first.AttemptCount)
+	}
+
+	// Повторно делаем задачу доступной только для подготовки теста.
+	_, err = db.Exec(
+		t.Context(),
+		`UPDATE tasks
+		 SET status = 'queued',
+		     lease_owner = NULL,
+		     lease_token = NULL,
+		     lease_expires_at = NULL,
+		     available_at = NOW()
+		 WHERE id = $1`,
+		expected.ID,
+	)
+	if err != nil {
+		t.Fatalf("reset task for second claim: %v", err)
+	}
+
+	second, err := repo.FindAndClaimForWorker(
+		t.Context(), workerID, []string{"email-send"}, 30,
+	)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+
+	if second.ID != first.ID {
+		t.Fatalf("second claimed task ID = %s, want %s", second.ID, first.ID)
+	}
+	if second.AttemptCount != 2 {
+		t.Errorf("second attempt count = %d, want 2", second.AttemptCount)
+	}
+
+	var attemptCount int
+	err = db.QueryRow(
+		t.Context(),
+		`SELECT COUNT(*)
+		 FROM task_attempts
+		 WHERE task_id = $1 AND worker_id = $2`,
+		expected.ID,
+		workerID,
+	).Scan(&attemptCount)
+	if err != nil {
+		t.Fatalf("count task attempts: %v", err)
+	}
+	if attemptCount != 2 {
+		t.Errorf("task attempt rows = %d, want 2", attemptCount)
+	}
+
+	var attemptNumbers []int
+	rows, err := db.Query(
+		t.Context(),
+		`SELECT attempt_number
+		 FROM task_attempts
+		 WHERE task_id = $1
+		 ORDER BY attempt_number`,
+		expected.ID,
+	)
+	if err != nil {
+		t.Fatalf("query task attempts: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var number int
+		if err := rows.Scan(&number); err != nil {
+			t.Fatalf("scan attempt number: %v", err)
+		}
+		attemptNumbers = append(attemptNumbers, number)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate task attempts: %v", err)
+	}
+
+	if len(attemptNumbers) != 2 ||
+		attemptNumbers[0] != 1 ||
+		attemptNumbers[1] != 2 {
+		t.Errorf("attempt numbers = %v, want [1 2]", attemptNumbers)
+	}
+}
+
 func openTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
