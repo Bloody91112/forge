@@ -66,6 +66,16 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if errors.Is(err, task.ErrNoActiveWorkers) {
+		httpresponse.ResponseError(w, http.StatusServiceUnavailable, httpresponse.ErrCodeNoActiveWorkers, "No active workers at the moment")
+		return
+	}
+
+	if errors.Is(err, task.ErrTaskTypeNotSupported) {
+		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeTaskTypeNotSupported, "Task type not supported by workers pool")
+		return
+	}
+
 	if err != nil {
 		log.Printf("create task unknown err: %v", err)
 		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeCreateTaskFailed, "Failed to create task")

@@ -24,6 +24,8 @@ const (
 	ErrCodeRegisterWorkerFailed       = "register_worker_failed"
 	ErrCodeHeartbeatWorkerFailed      = "heartbeat_worker_failed"
 	ErrCodeWorkerNotFound             = "worker_not_found"
+	ErrCodeNoActiveWorkers            = "no_active_workers"
+	ErrCodeTaskTypeNotSupported       = "task_type_not_supported"
 )
 
 type ErrorResponse struct {
