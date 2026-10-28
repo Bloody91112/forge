@@ -86,19 +86,20 @@ func runServer() error {
 	clientRepository := postgres.NewClientRepository(dbPool)
 	authService := auth.NewClientService(clientRepository)
 
-	// public
+	// public (no auth)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Check)
 	mux.HandleFunc("GET /readyz", readiness.Check)
 	mux.HandleFunc("POST /internal/v1/workers/register", workerHandler.Register)
 
-	// workers
+	// internal
 	workerMux := http.NewServeMux()
 	workerMux.HandleFunc("POST /internal/v1/workers/heartbeat", workerHandler.Heartbeat)
+	workerMux.HandleFunc("POST /iinternal/v1/tasks/claim", taskHandler.ClaimTask)
 
 	mux.Handle("/internal/v1/", middleware.WorkerAuth(workerAuthService, workerMux))
 
-	// clients
+	// public (auth)
 	clientMux := http.NewServeMux()
 	clientMux.HandleFunc("POST /api/v1/tasks", taskHandler.CreateTask)
 	clientMux.HandleFunc("GET /api/v1/tasks/{id}", taskHandler.GetTask)

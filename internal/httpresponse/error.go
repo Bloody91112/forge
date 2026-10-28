@@ -26,6 +26,8 @@ const (
 	ErrCodeWorkerNotFound             = "worker_not_found"
 	ErrCodeNoActiveWorkers            = "no_active_workers"
 	ErrCodeTaskTypeNotSupported       = "task_type_not_supported"
+	ErrCodeNoAvailableTasks           = "no_available_tasks"
+	ErrCodeFailedToClaimTask          = "claim_task_failed"
 )
 
 type ErrorResponse struct {

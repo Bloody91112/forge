@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"forge/internal/auth"
+	"forge/internal/task"
 	"forge/internal/worker"
 	"time"
 
@@ -118,4 +119,20 @@ func (r *WorkerRepository) GetActiveWorkersCapabilities(ctx context.Context) ([]
 	}
 
 	return capabilities, nil
+}
+
+func (r *WorkerRepository) GetActiveWorkerCapabilities(ctx context.Context, id uuid.UUID) ([]string, error) {
+	var workerCapabilities []string
+
+	err := r.db.QueryRow(ctx, "SELECT capabilities FROM workers WHERE id = $1 AND lease_expires_at > NOW() AND JSONB_ARRAY_LENGTH(capabilities) > 0", id).Scan(&workerCapabilities)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, task.ErrWorkerNotFound
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("get worker capabilities: %w", err)
+	}
+
+	return workerCapabilities, nil
 }

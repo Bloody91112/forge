@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"forge/internal/worker"
 	"slices"
 
 	"github.com/google/uuid"
@@ -19,6 +20,8 @@ var (
 	ErrIdempotencyConflict  = errors.New("idempotency key conflict")
 	ErrTaskTypeNotSupported = errors.New("task not supported")
 	ErrNoActiveWorkers      = errors.New("no active workers found")
+	ErrNoAvailableTasks     = errors.New("no available tasks found")
+	ErrWorkerNotFound       = errors.New("worker not found, not active or has no capabilities")
 )
 
 const (
@@ -27,6 +30,7 @@ const (
 	MaxTaskAttempts        = 10
 	MaxTaskTimeout         = 3600
 	MaxPayloadSize         = 1 << 20 // 1 MiB
+	LeaseSeconds           = 30
 )
 
 type contextKey string
@@ -37,10 +41,12 @@ type Repository interface {
 	CreateOrGetByIdempotencyKey(ctx context.Context, task Task) (Task, bool, error)
 	GetByID(ctx context.Context, taskID uuid.UUID, clientID uuid.UUID) (Task, error)
 	GetByIdempotencyKey(ctx context.Context, clientID uuid.UUID, key string) (Task, error)
+	FindAndClaimForWorker(ctx context.Context, workerID uuid.UUID, workerCapabilities []string, leaseSeconds int) (Task, error)
 }
 
 type WorkerRepository interface {
 	GetActiveWorkersCapabilities(ctx context.Context) ([][]string, error)
+	GetActiveWorkerCapabilities(ctx context.Context, id uuid.UUID) ([]string, error)
 }
 
 type Service struct {
@@ -195,12 +201,37 @@ func (s *Service) GetByID(ctx context.Context, taskID uuid.UUID) (Task, error) {
 	return task, nil
 }
 
-func calculateRequestHash(
-	payload json.RawMessage,
-	taskType string,
-	timeoutSeconds int64,
-	maxAttempts int64,
-) (string, error) {
+func (s *Service) Claim(ctx context.Context, dto ClaimTaskInput) (Task, error) {
+	if dto.WorkerID == uuid.Nil {
+		return Task{}, fmt.Errorf("nil uuid provided: %w", ErrInvalidInput)
+	}
+
+	contextWorkerID, ok := worker.IDFromContext(ctx)
+
+	if !ok {
+		return Task{}, worker.ErrMissingWorkerID
+	}
+
+	if dto.WorkerID != contextWorkerID {
+		return Task{}, fmt.Errorf("worker id conflict, context id: %s, provided id: %s: %w", contextWorkerID, dto.WorkerID, ErrInvalidInput)
+	}
+
+	workerCapabilities, err := s.workersRepo.GetActiveWorkerCapabilities(ctx, dto.WorkerID)
+
+	if err != nil {
+		return Task{}, fmt.Errorf("get worker capabilities: %w", err)
+	}
+
+	claimedTask, err := s.repo.FindAndClaimForWorker(ctx, dto.WorkerID, workerCapabilities, LeaseSeconds)
+
+	if err != nil {
+		return Task{}, fmt.Errorf("claim task: %w", err)
+	}
+
+	return claimedTask, nil
+}
+
+func calculateRequestHash(payload json.RawMessage, taskType string, timeoutSeconds int64, maxAttempts int64) (string, error) {
 	var decoded any
 
 	decoder := json.NewDecoder(bytes.NewReader(payload))

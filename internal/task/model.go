@@ -30,6 +30,9 @@ type Task struct {
 	AttemptCount   int64
 	MaxAttempts    int64
 	TimeoutSeconds int64
+	LeaseOwner     uuid.UUID
+	LeaseToken     uuid.UUID
+	LeaseExpiresAt *time.Time
 	CreatedAt      time.Time
 	AvailableAt    time.Time
 	StartedAt      *time.Time

@@ -21,6 +21,7 @@ type TaskHandler struct {
 type TaskService interface {
 	Create(ctx context.Context, dto task.CreateTaskInput) (task.Task, error)
 	GetByID(ctx context.Context, taskID uuid.UUID) (task.Task, error)
+	Claim(ctx context.Context, dto task.ClaimTaskInput) (task.Task, error)
 }
 
 func NewTaskHandler(service TaskService) *TaskHandler {
@@ -117,4 +118,34 @@ func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusOK, "got task", newGetTaskResponse(gotTask)); err != nil {
 		log.Print(err)
 	}
+}
+
+func (h *TaskHandler) ClaimTask(w http.ResponseWriter, r *http.Request) {
+	if !h.baseHandler.CheckJSONContentType(w, r) {
+		return
+	}
+
+	var input task.ClaimTaskInput
+
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &input, maxTaskRequestBodySize) {
+		return
+	}
+
+	claimedTask, err := h.service.Claim(r.Context(), input)
+
+	if errors.Is(err, task.ErrNoAvailableTasks) {
+		httpresponse.ResponseError(w, http.StatusNoContent, httpresponse.ErrCodeNoAvailableTasks, "No tasks available at the moment. Try later")
+		return
+	}
+
+	if err != nil {
+		log.Printf("claim task unknown err: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeFailedToClaimTask, "Failed to claim task")
+		return
+	}
+
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusAccepted, "claim task", newClaimTaskResponse(claimedTask)); err != nil {
+		log.Print(err)
+	}
+
 }
