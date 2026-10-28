@@ -134,7 +134,12 @@ func (h *TaskHandler) ClaimTask(w http.ResponseWriter, r *http.Request) {
 	claimedTask, err := h.service.Claim(r.Context(), input)
 
 	if errors.Is(err, task.ErrNoAvailableTasks) {
-		httpresponse.ResponseError(w, http.StatusNoContent, httpresponse.ErrCodeNoAvailableTasks, "No tasks available at the moment. Try later")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if errors.Is(err, task.ErrInvalidInput) {
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
 		return
 	}
 
