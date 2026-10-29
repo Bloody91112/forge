@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"forge/internal/worker"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -24,6 +25,8 @@ var (
 	ErrWorkerNotFound          = errors.New("worker not found, not active or has no capabilities")
 	ErrInvalidRequestStructure = errors.New("invalid request structure")
 	ErrPayloadTooLarge         = errors.New("payload too large")
+	ErrTaskLeaseLost           = errors.New("task lease lost")
+	ErrTaskAttemptNotFound     = errors.New("task attempt not found")
 )
 
 const (
@@ -49,6 +52,9 @@ type Repository interface {
 	GetByID(ctx context.Context, taskID uuid.UUID, clientID uuid.UUID) (Task, error)
 	GetByIdempotencyKey(ctx context.Context, clientID uuid.UUID, key string) (Task, error)
 	FindAndClaimForWorker(ctx context.Context, workerID uuid.UUID, workerCapabilities []string, leaseSeconds int) (Task, error)
+	RenewTaskLeaseForWorker(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, leaseSeconds int) (time.Time, error)
+	MarkTaskAsCompleted(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, result json.RawMessage) error
+	MarkTaskAsFailed(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, errCode, errMessage string, retryable bool) error
 }
 
 type WorkerRepository interface {
@@ -202,18 +208,8 @@ func (s *Service) GetByID(ctx context.Context, taskID uuid.UUID) (Task, error) {
 }
 
 func (s *Service) Claim(ctx context.Context, dto ClaimTaskInput) (Task, error) {
-	if dto.WorkerID == uuid.Nil {
-		return Task{}, fmt.Errorf("nil uuid provided: %w", ErrInvalidInput)
-	}
-
-	contextWorkerID, ok := worker.IDFromContext(ctx)
-
-	if !ok {
-		return Task{}, worker.ErrMissingWorkerID
-	}
-
-	if dto.WorkerID != contextWorkerID {
-		return Task{}, fmt.Errorf("worker id conflict, context id: %s, provided id: %s: %w", contextWorkerID, dto.WorkerID, ErrInvalidInput)
+	if err := checkWorkerID(ctx, dto.WorkerID); err != nil {
+		return Task{}, err
 	}
 
 	workerCapabilities, err := s.workersRepo.GetActiveWorkerCapabilities(ctx, dto.WorkerID)
@@ -229,6 +225,56 @@ func (s *Service) Claim(ctx context.Context, dto ClaimTaskInput) (Task, error) {
 	}
 
 	return claimedTask, nil
+}
+
+func (s *Service) Renew(ctx context.Context, dto RenewTaskInput) (time.Time, error) {
+	if err := checkWorkerID(ctx, dto.WorkerID); err != nil {
+		return time.Time{}, err
+	}
+
+	if err := checkNullUuids(dto.TaskID, dto.WorkerID, dto.LeaseToken); err != nil {
+		return time.Time{}, err
+	}
+
+	leaseExpiresAt, err := s.repo.RenewTaskLeaseForWorker(ctx, dto.TaskID, dto.WorkerID, dto.LeaseToken, LeaseSeconds)
+
+	if err != nil {
+		return time.Time{}, fmt.Errorf("renew task lease: %w", err)
+	}
+
+	return leaseExpiresAt, nil
+}
+
+func (s *Service) Complete(ctx context.Context, dto CompleteTaskInput) error {
+	if err := checkWorkerID(ctx, dto.WorkerID); err != nil {
+		return err
+	}
+
+	if err := checkNullUuids(dto.TaskID, dto.WorkerID, dto.LeaseToken); err != nil {
+		return err
+	}
+
+	if err := s.repo.MarkTaskAsCompleted(ctx, dto.TaskID, dto.WorkerID, dto.LeaseToken, dto.Result); err != nil {
+		return fmt.Errorf("mark task completed: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) Fail(ctx context.Context, dto FailTaskInput) error {
+	if err := checkWorkerID(ctx, dto.WorkerID); err != nil {
+		return err
+	}
+
+	if err := checkNullUuids(dto.TaskID, dto.WorkerID, dto.LeaseToken); err != nil {
+		return err
+	}
+
+	if err := s.repo.MarkTaskAsFailed(ctx, dto.TaskID, dto.WorkerID, dto.LeaseToken, dto.Error.Code, dto.Error.Message, *dto.Retryable); err != nil {
+		return fmt.Errorf("mark task failed: %w", err)
+	}
+
+	return nil
 }
 
 func calculateRequestHash(payload json.RawMessage, taskType string, timeoutSeconds int64, maxAttempts int64) (string, error) {
@@ -265,4 +311,32 @@ func calculateRequestHash(payload json.RawMessage, taskType string, timeoutSecon
 
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func checkWorkerID(ctx context.Context, id uuid.UUID) error {
+	if err := checkNullUuids(id); err != nil {
+		return err
+	}
+
+	contextWorkerID, ok := worker.IDFromContext(ctx)
+
+	if !ok {
+		return worker.ErrMissingWorkerID
+	}
+
+	if id != contextWorkerID {
+		return fmt.Errorf("worker id conflict, context id: %s, provided id: %s: %w", contextWorkerID, id, ErrInvalidInput)
+	}
+
+	return nil
+}
+
+func checkNullUuids(args ...uuid.UUID) error {
+	for _, uuidValue := range args {
+		if uuidValue == uuid.Nil {
+			return fmt.Errorf("nil uuid provided: %w", ErrInvalidInput)
+		}
+	}
+
+	return nil
 }

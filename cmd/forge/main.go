@@ -97,6 +97,10 @@ func runServer() error {
 	workerMux.HandleFunc("POST /internal/v1/workers/heartbeat", workerHandler.Heartbeat)
 	workerMux.HandleFunc("POST /internal/v1/tasks/claim", taskHandler.ClaimTask)
 
+	workerMux.HandleFunc("POST /internal/v1/tasks/{id}/renew", taskHandler.RenewTask)
+	workerMux.HandleFunc("POST /internal/v1/tasks/{id}/complete", taskHandler.CompleteTask)
+	workerMux.HandleFunc("POST /internal/v1/tasks/{id}/fail", taskHandler.FailTask)
+
 	mux.Handle("/internal/v1/", middleware.WorkerAuth(workerAuthService, workerMux))
 
 	// public (auth)

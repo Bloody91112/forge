@@ -7,6 +7,7 @@ import (
 	"forge/internal/task"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -22,6 +23,9 @@ type TaskService interface {
 	Create(ctx context.Context, dto task.CreateTaskInput) (task.CreateResult, error)
 	GetByID(ctx context.Context, taskID uuid.UUID) (task.Task, error)
 	Claim(ctx context.Context, dto task.ClaimTaskInput) (task.Task, error)
+	Renew(ctx context.Context, dto task.RenewTaskInput) (time.Time, error)
+	Complete(ctx context.Context, dto task.CompleteTaskInput) error
+	Fail(ctx context.Context, dto task.FailTaskInput) error
 }
 
 func NewTaskHandler(service TaskService) *TaskHandler {
@@ -168,4 +172,133 @@ func (h *TaskHandler) ClaimTask(w http.ResponseWriter, r *http.Request) {
 		log.Print(err)
 	}
 
+}
+
+func (h *TaskHandler) RenewTask(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.validateContentTypeAndGetTaskID(w, r)
+
+	if !ok {
+		return
+	}
+
+	var dto task.RenewTaskInput
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &dto, maxTaskRequestBodySize) {
+		return
+	}
+
+	dto.TaskID = id
+
+	leaseExpiresAt, err := h.service.Renew(r.Context(), dto)
+
+	if errors.Is(err, task.ErrInvalidInput) {
+		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
+		return
+	}
+
+	if errors.Is(err, task.ErrTaskLeaseLost) {
+		httpresponse.ResponseError(w, http.StatusConflict, httpresponse.ErrCodeTaskLeaseLost, "Task lease lost")
+		return
+	}
+
+	if err != nil {
+		log.Printf("renew task unknown err: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeFailedToRenewTask, "Failed to renew task")
+		return
+	}
+
+	response := RenewTaskResponse{LeaseExpiresAt: leaseExpiresAt}
+
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusOK, "renew task", response); err != nil {
+		log.Print(err)
+	}
+}
+
+func (h *TaskHandler) CompleteTask(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.validateContentTypeAndGetTaskID(w, r)
+
+	if !ok {
+		return
+	}
+
+	var dto task.CompleteTaskInput
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &dto, maxTaskRequestBodySize) {
+		return
+	}
+
+	dto.TaskID = id
+
+	err := h.service.Complete(r.Context(), dto)
+
+	if errors.Is(err, task.ErrTaskLeaseLost) {
+		httpresponse.ResponseError(w, http.StatusConflict, httpresponse.ErrCodeTaskLeaseLost, "Task lease lost")
+		return
+	}
+
+	if errors.Is(err, task.ErrInvalidInput) {
+		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
+		return
+	}
+
+	if err != nil {
+		log.Printf("complete task unknown err: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeFailedToCompleteTask, "Failed to mark task as completed")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *TaskHandler) FailTask(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.validateContentTypeAndGetTaskID(w, r)
+
+	if !ok {
+		return
+	}
+
+	var dto task.FailTaskInput
+	if !h.baseHandler.DecodeJSONAndCheckErrors(w, r, &dto, maxTaskRequestBodySize) {
+		return
+	}
+
+	if dto.Retryable == nil {
+		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
+		return
+	}
+
+	dto.TaskID = id
+
+	err := h.service.Fail(r.Context(), dto)
+
+	if errors.Is(err, task.ErrTaskLeaseLost) {
+		httpresponse.ResponseError(w, http.StatusConflict, httpresponse.ErrCodeTaskLeaseLost, "Task lease lost")
+		return
+	}
+
+	if errors.Is(err, task.ErrInvalidInput) {
+		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
+		return
+	}
+
+	if err != nil {
+		log.Printf("fail task unknown err: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeFailedToFailTask, "Failed to mark task as failed")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *TaskHandler) validateContentTypeAndGetTaskID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	if !h.baseHandler.CheckJSONContentType(w, r) {
+		return uuid.Nil, false
+	}
+
+	id, err := uuid.Parse(r.PathValue("id"))
+
+	if err != nil {
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidTaskID, "Invalid task id")
+		return uuid.Nil, false
+	}
+
+	return id, true
 }

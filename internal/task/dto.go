@@ -17,3 +17,27 @@ type CreateTaskInput struct {
 type ClaimTaskInput struct {
 	WorkerID uuid.UUID `json:"worker_id"`
 }
+
+type RenewTaskInput struct {
+	TaskID     uuid.UUID
+	WorkerID   uuid.UUID `json:"worker_id"`
+	LeaseToken uuid.UUID `json:"lease_token"`
+}
+
+type CompleteTaskInput struct {
+	TaskID     uuid.UUID
+	WorkerID   uuid.UUID       `json:"worker_id"`
+	LeaseToken uuid.UUID       `json:"lease_token"`
+	Result     json.RawMessage `json:"result"`
+}
+
+type FailTaskInput struct {
+	TaskID     uuid.UUID
+	WorkerID   uuid.UUID `json:"worker_id"`
+	LeaseToken uuid.UUID `json:"lease_token"`
+	Error      struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+	Retryable *bool `json:"retryable"`
+}

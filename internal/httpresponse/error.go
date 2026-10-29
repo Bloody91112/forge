@@ -26,9 +26,12 @@ const (
 	ErrCodeWorkerNotFound             = "worker_not_found"
 	ErrCodeNoActiveWorkers            = "no_active_workers"
 	ErrCodeTaskTypeNotSupported       = "task_type_not_supported"
-	ErrCodeNoAvailableTasks           = "no_available_tasks"
 	ErrCodeFailedToClaimTask          = "claim_task_failed"
 	ErrCodePayloadTooLarge            = "payload_too_large"
+	ErrCodeFailedToRenewTask          = "renew_task_failed"
+	ErrCodeFailedToCompleteTask       = "complete_task_failed"
+	ErrCodeFailedToFailTask           = "fail_task_failed"
+	ErrCodeTaskLeaseLost              = "lease_lost"
 )
 
 type ErrorResponse struct {

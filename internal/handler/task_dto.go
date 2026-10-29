@@ -38,6 +38,10 @@ type ClaimTaskItemResponse struct {
 	LeaseExpiresAt time.Time       `json:"lease_expires_at"`
 }
 
+type RenewTaskResponse struct {
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+}
+
 type ClaimTaskResponse struct {
 	Task ClaimTaskItemResponse `json:"task"`
 }
