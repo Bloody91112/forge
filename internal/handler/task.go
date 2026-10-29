@@ -234,6 +234,16 @@ func (h *TaskHandler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if errors.Is(err, task.ErrPayloadTooLarge) {
+		httpresponse.ResponseError(w, http.StatusRequestEntityTooLarge, httpresponse.ErrCodePayloadTooLarge, "Result exceeds maximum size of 1 MiB")
+		return
+	}
+
+	if errors.Is(err, task.ErrInvalidRequestStructure) {
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidPayload, "Result must be a JSON object")
+		return
+	}
+
 	if errors.Is(err, task.ErrInvalidInput) {
 		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
 		return

@@ -232,10 +232,10 @@ func (r *TaskRepository) RenewTaskLeaseForWorker(ctx context.Context, taskID, wo
 	var leaseExpiresAt time.Time
 
 	const updateQuery = `
-		UPDATE tasks
-		SET lease_expires_at = NOW() + ($1 * INTERVAL '1 second')
-		WHERE id = $2 AND lease_owner = $3 AND lease_token = $4 AND lease_expires_at > NOW()
-		RETURNING lease_expires_at
+    	UPDATE tasks
+    	SET lease_expires_at = clock_timestamp() + ($1 * INTERVAL '1 second')
+    	WHERE id = $2 AND lease_owner = $3 AND lease_token = $4 AND lease_expires_at > clock_timestamp()
+    	RETURNING lease_expires_at
 	`
 
 	err := r.db.QueryRow(ctx, updateQuery, leaseSeconds, taskID, workerID, leaseToken).Scan(&leaseExpiresAt)
@@ -261,8 +261,8 @@ func (r *TaskRepository) MarkTaskAsCompleted(ctx context.Context, taskID, worker
 
 	const updateTaskQuery = `
 		UPDATE tasks
-		SET status = 'succeeded', result = $1, finished_at = NOW(), lease_owner = null, lease_token = null, lease_expires_at = null
-		WHERE id = $2 AND lease_owner = $3 AND lease_token = $4 AND lease_expires_at > NOW()
+		SET status = 'succeeded', result = $1, finished_at = clock_timestamp(), lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+		WHERE id = $2 AND lease_owner = $3 AND lease_token = $4 AND lease_expires_at > clock_timestamp()
 		RETURNING attempt_count
 	`
 
