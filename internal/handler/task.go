@@ -260,11 +260,6 @@ func (h *TaskHandler) FailTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if dto.Retryable == nil {
-		httpresponse.ResponseError(w, http.StatusUnprocessableEntity, httpresponse.ErrCodeInvalidPayload, "Invalid payload params")
-		return
-	}
-
 	dto.TaskID = id
 
 	err := h.service.Fail(r.Context(), dto)

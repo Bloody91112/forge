@@ -234,7 +234,7 @@ func (r *TaskRepository) RenewTaskLeaseForWorker(ctx context.Context, taskID, wo
 	const updateQuery = `
 		UPDATE tasks
 		SET lease_expires_at = NOW() + ($1 * INTERVAL '1 second')
-		WHERE id = $2 AND lease_owner = $3 AND lease_token = $4
+		WHERE id = $2 AND lease_owner = $3 AND lease_token = $4 AND lease_expires_at > NOW()
 		RETURNING lease_expires_at
 	`
 
@@ -261,7 +261,7 @@ func (r *TaskRepository) MarkTaskAsCompleted(ctx context.Context, taskID, worker
 
 	const updateTaskQuery = `
 		UPDATE tasks
-		SET status = 'succeeded', result = $1, finished_at = NOW()
+		SET status = 'succeeded', result = $1, finished_at = NOW(), lease_owner = null, lease_token = null, lease_expires_at = null
 		WHERE id = $2 AND lease_owner = $3 AND lease_token = $4 AND lease_expires_at > NOW()
 		RETURNING attempt_count
 	`
@@ -305,20 +305,28 @@ func (r *TaskRepository) MarkTaskAsFailed(ctx context.Context, taskID, workerID,
 	var attemptCount, maxAttempts int64
 
 	const lockQuery = `
-        SELECT attempt_count, max_attempts
-        FROM tasks
-        WHERE id = $1 AND lease_owner = $2 AND lease_token = $3 AND lease_expires_at > NOW()
-        FOR UPDATE
-    `
+		SELECT attempt_count, max_attempts
+		FROM tasks
+		WHERE id = $1 AND status = 'running' AND lease_owner = $2 AND lease_token = $3
+		FOR UPDATE
+	`
 
 	err = tx.QueryRow(ctx, lockQuery, taskID, workerID, leaseToken).Scan(&attemptCount, &maxAttempts)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return task.ErrTaskLeaseLost
 	}
-
 	if err != nil {
 		return fmt.Errorf("lock task: %w", err)
+	}
+
+	var leaseValid bool
+	err = tx.QueryRow(ctx, `SELECT lease_expires_at > clock_timestamp() FROM tasks WHERE id = $1`, taskID).Scan(&leaseValid)
+	if err != nil {
+		return fmt.Errorf("check task lease: %w", err)
+	}
+	if !leaseValid {
+		return task.ErrTaskLeaseLost
 	}
 
 	retry := retryable && attemptCount < maxAttempts
@@ -329,28 +337,25 @@ func (r *TaskRepository) MarkTaskAsFailed(ctx context.Context, taskID, workerID,
 	}
 
 	var updateTaskQuery string
+
 	if retry {
 		delay := fullJitterBackoff(int(attemptCount))
 
 		updateTaskQuery = `
-            UPDATE tasks
-            SET status = 'queued', available_at = NOW() + ($1::bigint * INTERVAL '1 nanosecond'), error_code = $2, error_message = $3, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
-            WHERE id = $4
-        `
+			UPDATE tasks
+			SET status = 'queued', available_at = clock_timestamp() + ($1::double precision * INTERVAL '1 second'), error_code = $2, error_message = $3, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+			WHERE id = $4
+		`
 
-		_, err = tx.Exec(ctx, updateTaskQuery, int64(delay), errCode, errMessage, taskID)
-
+		_, err = tx.Exec(ctx, updateTaskQuery, delay.Seconds(), errCode, errMessage, taskID)
 	} else {
 		updateTaskQuery = `
-            UPDATE tasks
-            SET status = 'failed', error_code = $1, error_message = $2, finished_at = NOW(), lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
-            WHERE id = $3
-        `
+			UPDATE tasks
+			SET status = 'failed', error_code = $1, error_message = $2, finished_at = clock_timestamp(), lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+			WHERE id = $3
+		`
 
-		_, err = tx.Exec(
-			ctx, updateTaskQuery,
-			errCode, errMessage, taskID,
-		)
+		_, err = tx.Exec(ctx, updateTaskQuery, errCode, errMessage, taskID)
 	}
 
 	if err != nil {
@@ -358,13 +363,12 @@ func (r *TaskRepository) MarkTaskAsFailed(ctx context.Context, taskID, workerID,
 	}
 
 	const updateAttemptQuery = `
-        UPDATE task_attempts
-        SET outcome = $1, error_code = $2, error_message = $3, finished_at = NOW()
-        WHERE task_id = $4 AND attempt_number = $5
-    `
+		UPDATE task_attempts
+		SET outcome = $1, error_code = $2, error_message = $3, finished_at = clock_timestamp()
+		WHERE task_id = $4 AND attempt_number = $5
+	`
 
 	tag, err := tx.Exec(ctx, updateAttemptQuery, outcome, errCode, errMessage, taskID, attemptCount)
-
 	if err != nil {
 		return fmt.Errorf("update task attempt: %w", err)
 	}
@@ -372,9 +376,12 @@ func (r *TaskRepository) MarkTaskAsFailed(ctx context.Context, taskID, workerID,
 		return task.ErrTaskAttemptNotFound
 	}
 
-	return tx.Commit(ctx)
-}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit failed task transaction: %w", err)
+	}
 
+	return nil
+}
 func fullJitterBackoff(attempt int) time.Duration {
 	seconds := min(
 		time.Second*time.Duration(1<<(attempt-1)),

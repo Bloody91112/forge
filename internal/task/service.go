@@ -250,6 +250,20 @@ func (s *Service) Complete(ctx context.Context, dto CompleteTaskInput) error {
 		return err
 	}
 
+	payload := bytes.TrimSpace(dto.Result)
+
+	if len(payload) == 0 {
+		return fmt.Errorf("payload must be a JSON object: %w", ErrInvalidRequestStructure)
+	}
+
+	if len(payload) > MaxPayloadSize {
+		return fmt.Errorf("payload exceeds %d bytes: %w", MaxPayloadSize, ErrPayloadTooLarge)
+	}
+
+	if !json.Valid(payload) || payload[0] != '{' {
+		return fmt.Errorf("payload must be a JSON object: %w", ErrInvalidRequestStructure)
+	}
+
 	if err := checkNullUuids(dto.TaskID, dto.WorkerID, dto.LeaseToken); err != nil {
 		return err
 	}
@@ -264,6 +278,18 @@ func (s *Service) Complete(ctx context.Context, dto CompleteTaskInput) error {
 func (s *Service) Fail(ctx context.Context, dto FailTaskInput) error {
 	if err := checkWorkerID(ctx, dto.WorkerID); err != nil {
 		return err
+	}
+
+	if dto.Retryable == nil {
+		return fmt.Errorf("retryable field not set: %w", ErrInvalidInput)
+	}
+
+	if dto.Error.Code == "" {
+		return fmt.Errorf("no error code: %w", ErrInvalidInput)
+	}
+
+	if dto.Error.Message == "" {
+		return fmt.Errorf("no error message: %w", ErrInvalidInput)
 	}
 
 	if err := checkNullUuids(dto.TaskID, dto.WorkerID, dto.LeaseToken); err != nil {
