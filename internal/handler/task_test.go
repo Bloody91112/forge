@@ -656,6 +656,353 @@ func TestTaskHandler_CompleteTask(t *testing.T) {
 			if service.completeInput.LeaseToken != leaseToken {
 				t.Errorf("service lease token = %s, want %s", service.completeInput.LeaseToken, leaseToken)
 			}
+			if diff := cmp.Diff(json.RawMessage(`{"ok":true}`), service.completeInput.Result); diff != "" {
+				t.Errorf("service result mismatch (-want +got):\n%s", diff)
+			}
+
+			if rr.Body.Len() != 0 {
+				t.Errorf("success response body = %q, want empty body", rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestTaskHandler_RenewTask(t *testing.T) {
+	taskID := uuid.New()
+	workerID := uuid.New()
+	leaseToken := uuid.New()
+	leaseExpiresAt := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name               string
+		pathID             string
+		body               string
+		serviceErr         error
+		serviceLeaseExpiry time.Time
+		wantStatus         int
+		wantErrCode        string
+	}{
+		{
+			name:               "success",
+			pathID:             taskID.String(),
+			body:               `{"worker_id":"` + workerID.String() + `","lease_token":"` + leaseToken.String() + `"}`,
+			serviceLeaseExpiry: leaseExpiresAt,
+			wantStatus:         http.StatusOK,
+		},
+		{
+			name:        "invalid input",
+			pathID:      taskID.String(),
+			body:        `{"worker_id":"` + workerID.String() + `","lease_token":"` + leaseToken.String() + `"}`,
+			serviceErr:  task.ErrInvalidInput,
+			wantStatus:  http.StatusUnprocessableEntity,
+			wantErrCode: httpresponse.ErrCodeInvalidPayload,
+		},
+		{
+			name:        "lease lost",
+			pathID:      taskID.String(),
+			body:        `{"worker_id":"` + workerID.String() + `","lease_token":"` + leaseToken.String() + `"}`,
+			serviceErr:  task.ErrTaskLeaseLost,
+			wantStatus:  http.StatusConflict,
+			wantErrCode: httpresponse.ErrCodeTaskLeaseLost,
+		},
+		{
+			name:        "internal error",
+			pathID:      taskID.String(),
+			body:        `{"worker_id":"` + workerID.String() + `","lease_token":"` + leaseToken.String() + `"}`,
+			serviceErr:  errors.New("database unavailable"),
+			wantStatus:  http.StatusInternalServerError,
+			wantErrCode: httpresponse.ErrCodeFailedToRenewTask,
+		},
+		{
+			name:        "invalid task ID",
+			pathID:      "invalid-id",
+			body:        `{"worker_id":"` + workerID.String() + `","lease_token":"` + leaseToken.String() + `"}`,
+			wantStatus:  http.StatusBadRequest,
+			wantErrCode: httpresponse.ErrCodeInvalidTaskID,
+		},
+		{
+			name:        "invalid content type",
+			pathID:      taskID.String(),
+			body:        `{"worker_id":"` + workerID.String() + `","lease_token":"` + leaseToken.String() + `"}`,
+			wantStatus:  http.StatusUnsupportedMediaType,
+			wantErrCode: httpresponse.ErrCodeMediaTypeError,
+		},
+		{
+			name:        "invalid JSON",
+			pathID:      taskID.String(),
+			body:        `{"worker_id":`,
+			wantStatus:  http.StatusBadRequest,
+			wantErrCode: httpresponse.ErrCodeInvalidJSONPayload,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/internal/v1/tasks/"+tt.pathID+"/renew",
+				strings.NewReader(tt.body),
+			)
+
+			if tt.name == "invalid content type" {
+				req.Header.Set("Content-Type", "text/plain")
+			} else {
+				req.Header.Set("Content-Type", "application/json")
+			}
+
+			service := &FakeTaskService{
+				renewLeaseExpiresAt: tt.serviceLeaseExpiry,
+				renewErr:            tt.serviceErr,
+			}
+			handler := NewTaskHandler(service)
+
+			mux := http.NewServeMux()
+			mux.HandleFunc(
+				"POST /internal/v1/tasks/{id}/renew",
+				handler.RenewTask,
+			)
+
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+
+			if tt.wantErrCode != "" {
+				assertJSONErrorResponse(
+					t,
+					rr,
+					tt.wantStatus,
+					tt.wantErrCode,
+				)
+				return
+			}
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf(
+					"HTTP status = %d, want %d; body: %s",
+					rr.Code,
+					tt.wantStatus,
+					rr.Body.String(),
+				)
+			}
+
+			assertJSONContentType(t, rr)
+
+			if service.renewInput.TaskID != taskID {
+				t.Errorf(
+					"service task ID = %s, want %s",
+					service.renewInput.TaskID,
+					taskID,
+				)
+			}
+
+			if service.renewInput.WorkerID != workerID {
+				t.Errorf(
+					"service worker ID = %s, want %s",
+					service.renewInput.WorkerID,
+					workerID,
+				)
+			}
+
+			if service.renewInput.LeaseToken != leaseToken {
+				t.Errorf(
+					"service lease token = %s, want %s",
+					service.renewInput.LeaseToken,
+					leaseToken,
+				)
+			}
+
+			var got RenewTaskResponse
+			if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+				t.Fatalf("decode renew response: %v", err)
+			}
+
+			if !got.LeaseExpiresAt.Equal(leaseExpiresAt) {
+				t.Errorf(
+					"lease expiry = %v, want %v",
+					got.LeaseExpiresAt,
+					leaseExpiresAt,
+				)
+			}
+		})
+	}
+}
+
+func TestTaskHandler_FailTask(t *testing.T) {
+	taskID := uuid.New()
+	workerID := uuid.New()
+	leaseToken := uuid.New()
+
+	tests := []struct {
+		name        string
+		pathID      string
+		body        string
+		serviceErr  error
+		wantStatus  int
+		wantErrCode string
+	}{
+		{
+			name:   "success",
+			pathID: taskID.String(),
+			body: `{
+				"worker_id":"` + workerID.String() + `",
+				"lease_token":"` + leaseToken.String() + `",
+				"error":{"code":"worker_error","message":"processing failed"},
+				"retryable":true
+			}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:   "lease lost",
+			pathID: taskID.String(),
+			body: `{
+				"worker_id":"` + workerID.String() + `",
+				"lease_token":"` + leaseToken.String() + `",
+				"error":{"code":"worker_error","message":"processing failed"},
+				"retryable":true
+			}`,
+			serviceErr:  task.ErrTaskLeaseLost,
+			wantStatus:  http.StatusConflict,
+			wantErrCode: httpresponse.ErrCodeTaskLeaseLost,
+		},
+		{
+			name:   "invalid input",
+			pathID: taskID.String(),
+			body: `{
+				"worker_id":"` + workerID.String() + `",
+				"lease_token":"` + leaseToken.String() + `",
+				"error":{"code":"worker_error","message":"processing failed"},
+				"retryable":true
+			}`,
+			serviceErr:  task.ErrInvalidInput,
+			wantStatus:  http.StatusUnprocessableEntity,
+			wantErrCode: httpresponse.ErrCodeInvalidPayload,
+		},
+		{
+			name:   "internal error",
+			pathID: taskID.String(),
+			body: `{
+				"worker_id":"` + workerID.String() + `",
+				"lease_token":"` + leaseToken.String() + `",
+				"error":{"code":"worker_error","message":"processing failed"},
+				"retryable":true
+			}`,
+			serviceErr:  errors.New("database unavailable"),
+			wantStatus:  http.StatusInternalServerError,
+			wantErrCode: httpresponse.ErrCodeFailedToFailTask,
+		},
+		{
+			name:        "invalid task ID",
+			pathID:      "invalid-id",
+			body:        `{}`,
+			wantStatus:  http.StatusBadRequest,
+			wantErrCode: httpresponse.ErrCodeInvalidTaskID,
+		},
+		{
+			name:        "invalid content type",
+			pathID:      taskID.String(),
+			body:        `{}`,
+			wantStatus:  http.StatusUnsupportedMediaType,
+			wantErrCode: httpresponse.ErrCodeMediaTypeError,
+		},
+		{
+			name:        "invalid JSON",
+			pathID:      taskID.String(),
+			body:        `{"worker_id":`,
+			wantStatus:  http.StatusBadRequest,
+			wantErrCode: httpresponse.ErrCodeInvalidJSONPayload,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/internal/v1/tasks/"+tt.pathID+"/fail",
+				strings.NewReader(tt.body),
+			)
+
+			if tt.name == "invalid content type" {
+				req.Header.Set("Content-Type", "text/plain")
+			} else {
+				req.Header.Set("Content-Type", "application/json")
+			}
+
+			service := &FakeTaskService{
+				failErr: tt.serviceErr,
+			}
+			handler := NewTaskHandler(service)
+
+			mux := http.NewServeMux()
+			mux.HandleFunc(
+				"POST /internal/v1/tasks/{id}/fail",
+				handler.FailTask,
+			)
+
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+
+			if tt.wantErrCode != "" {
+				assertJSONErrorResponse(
+					t,
+					rr,
+					tt.wantStatus,
+					tt.wantErrCode,
+				)
+				return
+			}
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf(
+					"HTTP status = %d, want %d; body: %s",
+					rr.Code,
+					tt.wantStatus,
+					rr.Body.String(),
+				)
+			}
+
+			if service.failInput.TaskID != taskID {
+				t.Errorf(
+					"service task ID = %s, want %s",
+					service.failInput.TaskID,
+					taskID,
+				)
+			}
+
+			if service.failInput.WorkerID != workerID {
+				t.Errorf(
+					"service worker ID = %s, want %s",
+					service.failInput.WorkerID,
+					workerID,
+				)
+			}
+
+			if service.failInput.LeaseToken != leaseToken {
+				t.Errorf(
+					"service lease token = %s, want %s",
+					service.failInput.LeaseToken,
+					leaseToken,
+				)
+			}
+
+			if service.failInput.Error.Code != "worker_error" {
+				t.Errorf(
+					"error code = %q, want worker_error",
+					service.failInput.Error.Code,
+				)
+			}
+
+			if service.failInput.Error.Message != "processing failed" {
+				t.Errorf(
+					"error message = %q, want processing failed",
+					service.failInput.Error.Message,
+				)
+			}
+
+			if service.failInput.Retryable == nil {
+				t.Fatal("retryable = nil, want true")
+			}
+			if !*service.failInput.Retryable {
+				t.Error("retryable = false, want true")
+			}
 		})
 	}
 }
