@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"forge/internal/worker"
 	"testing"
@@ -37,6 +38,17 @@ type taskRepositoryStub struct {
 	claimWorkerID     uuid.UUID
 	claimCapabilities []string
 	claimLeaseSeconds int
+
+	renewLeaseExpiresAt time.Time
+	renewLeaseErr       error
+	renewLeaseCalled    bool
+
+	completeErr         error
+	completeCalled      bool
+	completedTaskID     uuid.UUID
+	completedWorkerID   uuid.UUID
+	completedLeaseToken uuid.UUID
+	completedResult     json.RawMessage
 }
 
 func (r *taskRepositoryStub) CreateOrGetByIdempotencyKey(
@@ -112,6 +124,43 @@ func (r *taskRepositoryStub) FindAndClaimForWorker(
 	}
 
 	return Task{}, ErrNoAvailableTasks
+}
+
+func (r *taskRepositoryStub) RenewTaskLeaseForWorker(
+	_ context.Context,
+	taskID, workerID, leaseToken uuid.UUID,
+	_ int,
+) (time.Time, error) {
+	r.renewLeaseCalled = true
+	if r.renewLeaseErr != nil {
+		return time.Time{}, r.renewLeaseErr
+	}
+	return r.renewLeaseExpiresAt, nil
+}
+
+func (r *taskRepositoryStub) MarkTaskAsCompleted(
+	_ context.Context,
+	taskID, workerID, leaseToken uuid.UUID,
+	result json.RawMessage,
+) error {
+	r.completeCalled = true
+	r.completedTaskID = taskID
+	r.completedWorkerID = workerID
+	r.completedLeaseToken = leaseToken
+	r.completedResult = result
+	return r.completeErr
+}
+
+func (r *taskRepositoryStub) MarkTaskAsFailed(
+	_ context.Context,
+	_ uuid.UUID,
+	_ uuid.UUID,
+	_ uuid.UUID,
+	_ string,
+	_ string,
+	_ bool,
+) error {
+	return nil
 }
 
 type workerRepositoryStub struct {
@@ -1009,5 +1058,98 @@ func TestService_ClaimPropagatesRepositoryError(t *testing.T) {
 	_, err := service.Claim(ctx, ClaimTaskInput{WorkerID: workerID})
 	if !errors.Is(err, repositoryErr) {
 		t.Fatalf("error = %v, want wrapped %v", err, repositoryErr)
+	}
+}
+
+func TestService_Complete_ValidatesResult(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  []byte
+		wantErr error
+	}{
+		{
+			name:   "valid object",
+			result: []byte(`{"ok":true}`),
+		},
+		{
+			name:    "empty result",
+			result:  nil,
+			wantErr: ErrInvalidRequestStructure,
+		},
+		{
+			name:    "invalid JSON",
+			result:  []byte(`{"ok":`),
+			wantErr: ErrInvalidRequestStructure,
+		},
+		{
+			name:    "array",
+			result:  []byte(`[1,2,3]`),
+			wantErr: ErrInvalidRequestStructure,
+		},
+		{
+			name:    "string",
+			result:  []byte(`"ok"`),
+			wantErr: ErrInvalidRequestStructure,
+		},
+		{
+			name:    "number",
+			result:  []byte(`42`),
+			wantErr: ErrInvalidRequestStructure,
+		},
+		{
+			name:    "null",
+			result:  []byte(`null`),
+			wantErr: ErrInvalidRequestStructure,
+		},
+		{
+			name:    "payload too large",
+			result:  append([]byte(`{"data":"`), append(make([]byte, MaxPayloadSize), []byte(`"}`)...)...),
+			wantErr: ErrPayloadTooLarge,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workerID := uuid.New()
+			taskID := uuid.New()
+			leaseToken := uuid.New()
+
+			repo := &taskRepositoryStub{}
+			service := NewService(repo, &workerRepositoryStub{})
+
+			ctx := worker.WithID(t.Context(), workerID)
+			err := service.Complete(ctx, CompleteTaskInput{
+				TaskID:     taskID,
+				WorkerID:   workerID,
+				LeaseToken: leaseToken,
+				Result:     tt.result,
+			})
+
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("Complete() error = %v, want %v", err, tt.wantErr)
+				}
+				if repo.completeCalled {
+					t.Fatal("repository must not be called for invalid result")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Complete() error = %v", err)
+			}
+			if !repo.completeCalled {
+				t.Fatal("repository was not called")
+			}
+			if repo.completedTaskID != taskID {
+				t.Errorf("task ID = %s, want %s", repo.completedTaskID, taskID)
+			}
+			if repo.completedWorkerID != workerID {
+				t.Errorf("worker ID = %s, want %s", repo.completedWorkerID, workerID)
+			}
+			if repo.completedLeaseToken != leaseToken {
+				t.Errorf("lease token = %s, want %s", repo.completedLeaseToken, leaseToken)
+			}
+		})
 	}
 }
