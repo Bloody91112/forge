@@ -22,6 +22,12 @@ func NewTaskRepository(db *pgxpool.Pool) *TaskRepository {
 	return &TaskRepository{db: db}
 }
 
+type expiredLeaseTask struct {
+	ID           uuid.UUID
+	AttemptCount int64
+	MaxAttempts  int64
+}
+
 func (r *TaskRepository) GetByID(ctx context.Context, taskID uuid.UUID, clientID uuid.UUID) (task.Task, error) {
 	const selectQuery = `
 		SELECT
@@ -382,6 +388,144 @@ func (r *TaskRepository) MarkTaskAsFailed(ctx context.Context, taskID, workerID,
 
 	return nil
 }
+
+func (r *TaskRepository) RecoverStackTasks(ctx context.Context) (int, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin recovery transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	const selectQuery = `
+		SELECT id, attempt_count, max_attempts
+		FROM tasks
+		WHERE status = 'running'
+		  AND lease_expires_at <= clock_timestamp()
+		ORDER BY lease_expires_at ASC
+		LIMIT 100
+		FOR UPDATE SKIP LOCKED
+	`
+
+	rows, err := tx.Query(ctx, selectQuery)
+	if err != nil {
+		return 0, fmt.Errorf("select expired leases: %w", err)
+	}
+
+	var expiredTasks []expiredLeaseTask
+
+	for rows.Next() {
+		var t expiredLeaseTask
+
+		if err := rows.Scan(&t.ID, &t.AttemptCount, &t.MaxAttempts); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan expired task: %w", err)
+		}
+
+		expiredTasks = append(expiredTasks, t)
+	}
+
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate expired tasks: %w", err)
+	}
+
+	rows.Close()
+
+	for _, t := range expiredTasks {
+		var attemptID uuid.UUID
+
+		err := tx.QueryRow(
+			ctx,
+			`
+				SELECT id
+				FROM task_attempts
+				WHERE task_id = $1
+				  AND attempt_number = $2
+				FOR UPDATE
+			`,
+			t.ID,
+			t.AttemptCount,
+		).Scan(&attemptID)
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf(
+				"current attempt not found for task %s: %w",
+				t.ID,
+				task.ErrTaskAttemptNotFound,
+			)
+		}
+
+		if err != nil {
+			return 0, fmt.Errorf("lock task attempt: %w", err)
+		}
+
+		_, err = tx.Exec(
+			ctx,
+			`
+				UPDATE task_attempts
+				SET outcome = 'lease_expired',
+				    error_code = 'lease_expired',
+				    error_message = 'Task lease expired',
+				    finished_at = clock_timestamp()
+				WHERE id = $1
+			`,
+			attemptID,
+		)
+
+		if err != nil {
+			return 0, fmt.Errorf("close expired task attempt: %w", err)
+		}
+
+		if t.AttemptCount < t.MaxAttempts {
+			delay := fullJitterBackoff(int(t.AttemptCount))
+
+			_, err = tx.Exec(
+				ctx,
+				`
+					UPDATE tasks
+					SET status = 'queued',
+					    available_at = clock_timestamp() +
+					        ($1::double precision * INTERVAL '1 second'),
+					    error_code = 'lease_expired',
+					    error_message = 'Task lease expired',
+					    lease_owner = NULL,
+					    lease_token = NULL,
+					    lease_expires_at = NULL
+					WHERE id = $2
+				`,
+				delay.Seconds(),
+				t.ID,
+			)
+		} else {
+			_, err = tx.Exec(
+				ctx,
+				`
+					UPDATE tasks
+					SET status = 'failed',
+					    finished_at = clock_timestamp(),
+					    error_code = 'lease_expired',
+					    error_message = 'Task lease expired',
+					    lease_owner = NULL,
+					    lease_token = NULL,
+					    lease_expires_at = NULL
+					WHERE id = $1
+				`,
+				t.ID,
+			)
+		}
+
+		if err != nil {
+			return 0, fmt.Errorf("recover expired task %s: %w", t.ID, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit recovery transaction: %w", err)
+	}
+
+	return len(expiredTasks), nil
+}
+
 func fullJitterBackoff(attempt int) time.Duration {
 	seconds := min(
 		time.Second*time.Duration(1<<(attempt-1)),

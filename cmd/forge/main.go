@@ -96,11 +96,9 @@ func runServer() error {
 	workerMux := http.NewServeMux()
 	workerMux.HandleFunc("POST /internal/v1/workers/heartbeat", workerHandler.Heartbeat)
 	workerMux.HandleFunc("POST /internal/v1/tasks/claim", taskHandler.ClaimTask)
-
 	workerMux.HandleFunc("POST /internal/v1/tasks/{id}/renew", taskHandler.RenewTask)
 	workerMux.HandleFunc("POST /internal/v1/tasks/{id}/complete", taskHandler.CompleteTask)
 	workerMux.HandleFunc("POST /internal/v1/tasks/{id}/fail", taskHandler.FailTask)
-
 	mux.Handle("/internal/v1/", middleware.WorkerAuth(workerAuthService, workerMux))
 
 	// public (auth)
@@ -123,6 +121,8 @@ func runServer() error {
 	go func() {
 		serverErr <- server.ListenAndServe()
 	}()
+
+	go runTaskRecoveryLoop(mainCtx, taskService)
 
 	var runErr error
 
@@ -148,6 +148,34 @@ func runServer() error {
 	}
 
 	return runErr
+}
+
+func runTaskRecoveryLoop(ctx context.Context, service *task.Service) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("task recovery loop stopped")
+			return
+		case <-ticker.C:
+			recovered, err := service.Recover(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+
+				log.Printf("task recovery failed: %v", err)
+				continue
+			}
+
+			if recovered > 0 {
+				log.Printf("lease recovery completed: recovered %d tasks", recovered)
+			}
+		}
+
+	}
 }
 
 func printUsage() {

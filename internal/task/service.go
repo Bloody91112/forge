@@ -55,6 +55,7 @@ type Repository interface {
 	RenewTaskLeaseForWorker(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, leaseSeconds int) (time.Time, error)
 	MarkTaskAsCompleted(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, result json.RawMessage) error
 	MarkTaskAsFailed(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, errCode, errMessage string, retryable bool) error
+	RecoverStackTasks(ctx context.Context) (int, error)
 }
 
 type WorkerRepository interface {
@@ -301,6 +302,15 @@ func (s *Service) Fail(ctx context.Context, dto FailTaskInput) error {
 	}
 
 	return nil
+}
+
+func (s *Service) Recover(ctx context.Context) (int, error) {
+	count, err := s.repo.RecoverStackTasks(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("recover stack tasks: %w", err)
+	}
+
+	return count, nil
 }
 
 func calculateRequestHash(payload json.RawMessage, taskType string, timeoutSeconds int64, maxAttempts int64) (string, error) {
