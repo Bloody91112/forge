@@ -122,7 +122,11 @@ func runServer() error {
 		serverErr <- server.ListenAndServe()
 	}()
 
-	go runTaskRecoveryLoop(mainCtx, taskService)
+	recoveryDone := make(chan struct{})
+	go func() {
+		defer close(recoveryDone)
+		runTaskRecoveryLoop(mainCtx, taskService)
+	}()
 
 	var runErr error
 
@@ -146,6 +150,8 @@ func runServer() error {
 			log.Printf("force close failed: %v", closeErr)
 		}
 	}
+
+	<-recoveryDone
 
 	return runErr
 }

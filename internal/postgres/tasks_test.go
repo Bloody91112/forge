@@ -1015,3 +1015,237 @@ func TestTaskRepository_LeaseExpiresWhileWaitingForRowLock(t *testing.T) {
 		})
 	}
 }
+
+func expireTaskLease(t *testing.T, db *pgxpool.Pool, taskID uuid.UUID) {
+	t.Helper()
+
+	_, err := db.Exec(t.Context(), `
+		UPDATE tasks
+		SET lease_expires_at = clock_timestamp() - INTERVAL '1 second'
+		WHERE id = $1
+	`, taskID)
+	if err != nil {
+		t.Fatalf("expire task lease: %v", err)
+	}
+}
+
+func TestTaskRepository_RecoverStackTasks_RequeuesTask(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	expected, _, _ := createRunningTask(t, db, repo)
+	expireTaskLease(t, db, expected.ID)
+
+	recovered, err := repo.RecoverStackTasks(t.Context())
+	if err != nil {
+		t.Fatalf("RecoverStackTasks(): %v", err)
+	}
+
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+
+	var status, errorCode, errorMessage string
+	var leaseOwner, leaseToken *uuid.UUID
+	var leaseExpiry, finishedAt *time.Time
+	var availableAt time.Time
+
+	err = db.QueryRow(t.Context(), `
+		SELECT status, error_code, error_message,
+		       lease_owner, lease_token, lease_expires_at,
+		       finished_at, available_at
+		FROM tasks
+		WHERE id = $1
+	`, expected.ID).Scan(
+		&status, &errorCode, &errorMessage,
+		&leaseOwner, &leaseToken, &leaseExpiry,
+		&finishedAt, &availableAt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if status != "queued" {
+		t.Errorf("status = %q, want queued", status)
+	}
+	if errorCode != "lease_expired" {
+		t.Errorf("error_code = %q, want lease_expired", errorCode)
+	}
+	if errorMessage != "Task lease expired" {
+		t.Errorf("error_message = %q, want Task lease expired", errorMessage)
+	}
+	if leaseOwner != nil || leaseToken != nil || leaseExpiry != nil {
+		t.Error("lease fields must be cleared")
+	}
+	if finishedAt != nil {
+		t.Error("finished_at must be NULL for a queued task")
+	}
+	if availableAt.Before(time.Now()) {
+		t.Error("available_at must not be in the past")
+	}
+
+	var outcome, attemptErrorCode, attemptErrorMessage string
+	var attemptFinishedAt *time.Time
+
+	err = db.QueryRow(t.Context(), `
+		SELECT outcome, error_code, error_message, finished_at
+		FROM task_attempts
+		WHERE task_id = $1 AND attempt_number = 1
+	`, expected.ID).Scan(
+		&outcome, &attemptErrorCode, &attemptErrorMessage, &attemptFinishedAt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if outcome != "lease_expired" {
+		t.Errorf("attempt outcome = %q, want lease_expired", outcome)
+	}
+	if attemptErrorCode != "lease_expired" {
+		t.Errorf("attempt error_code = %q, want lease_expired", attemptErrorCode)
+	}
+	if attemptErrorMessage != "Task lease expired" {
+		t.Errorf("attempt error_message = %q, want Task lease expired", attemptErrorMessage)
+	}
+	if attemptFinishedAt == nil {
+		t.Error("attempt finished_at must be set")
+	}
+}
+
+func TestTaskRepository_RecoverStackTasks_FailsWhenAttemptsExhausted(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	expected, _, _ := createRunningTask(t, db, repo)
+
+	_, err := db.Exec(t.Context(), `
+		UPDATE tasks
+		SET max_attempts = 1
+		WHERE id = $1
+	`, expected.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expireTaskLease(t, db, expected.ID)
+
+	recovered, err := repo.RecoverStackTasks(t.Context())
+	if err != nil {
+		t.Fatalf("RecoverStackTasks(): %v", err)
+	}
+
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+
+	var status, errorCode, errorMessage string
+	var finishedAt *time.Time
+	var leaseOwner, leaseToken *uuid.UUID
+	var leaseExpiry *time.Time
+
+	err = db.QueryRow(t.Context(), `
+		SELECT status, error_code, error_message,
+		       finished_at, lease_owner, lease_token, lease_expires_at
+		FROM tasks
+		WHERE id = $1
+	`, expected.ID).Scan(
+		&status, &errorCode, &errorMessage,
+		&finishedAt, &leaseOwner, &leaseToken, &leaseExpiry,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if status != "failed" {
+		t.Errorf("status = %q, want failed", status)
+	}
+	if errorCode != "lease_expired" {
+		t.Errorf("error_code = %q, want lease_expired", errorCode)
+	}
+	if errorMessage != "Task lease expired" {
+		t.Errorf("error_message = %q, want Task lease expired", errorMessage)
+	}
+	if finishedAt == nil {
+		t.Error("finished_at must be set")
+	}
+	if leaseOwner != nil || leaseToken != nil || leaseExpiry != nil {
+		t.Error("lease fields must be cleared")
+	}
+}
+
+func TestTaskRepository_RecoverStackTasks_IgnoresActiveLease(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	expected, _, _ := createRunningTask(t, db, repo)
+
+	recovered, err := repo.RecoverStackTasks(t.Context())
+	if err != nil {
+		t.Fatalf("RecoverStackTasks(): %v", err)
+	}
+
+	if recovered != 0 {
+		t.Errorf("recovered = %d, want 0", recovered)
+	}
+
+	var status string
+	err = db.QueryRow(t.Context(),
+		`SELECT status FROM tasks WHERE id = $1`,
+		expected.ID,
+	).Scan(&status)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if status != "running" {
+		t.Errorf("status = %q, want running", status)
+	}
+}
+
+func TestTaskRepository_RecoverStackTasks_RollsBackWhenAttemptMissing(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	expected, _, _ := createRunningTask(t, db, repo)
+
+	_, err := db.Exec(t.Context(), `
+		DELETE FROM task_attempts
+		WHERE task_id = $1 AND attempt_number = 1
+	`, expected.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expireTaskLease(t, db, expected.ID)
+
+	recovered, err := repo.RecoverStackTasks(t.Context())
+	if !errors.Is(err, task.ErrTaskAttemptNotFound) {
+		t.Fatalf("error = %v, want %v", err, task.ErrTaskAttemptNotFound)
+	}
+
+	if recovered != 0 {
+		t.Errorf("recovered = %d, want 0", recovered)
+	}
+
+	var status string
+	var leaseOwner, leaseToken *uuid.UUID
+	var leaseExpiry *time.Time
+
+	err = db.QueryRow(t.Context(), `
+		SELECT status, lease_owner, lease_token, lease_expires_at
+		FROM tasks
+		WHERE id = $1
+	`, expected.ID).Scan(
+		&status, &leaseOwner, &leaseToken, &leaseExpiry,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if status != "running" {
+		t.Errorf("status = %q, want running (transaction must roll back)", status)
+	}
+	if leaseOwner == nil || leaseToken == nil || leaseExpiry == nil {
+		t.Error("lease fields must remain unchanged after rollback")
+	}
+}

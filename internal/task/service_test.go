@@ -49,6 +49,10 @@ type taskRepositoryStub struct {
 	completedWorkerID   uuid.UUID
 	completedLeaseToken uuid.UUID
 	completedResult     json.RawMessage
+
+	recoverCount  int
+	recoverErr    error
+	recoverCalled bool
 }
 
 func (r *taskRepositoryStub) CreateOrGetByIdempotencyKey(
@@ -161,6 +165,18 @@ func (r *taskRepositoryStub) MarkTaskAsFailed(
 	_ bool,
 ) error {
 	return nil
+}
+
+func (r *taskRepositoryStub) RecoverStackTasks(
+	_ context.Context,
+) (int, error) {
+	r.recoverCalled = true
+
+	if r.recoverErr != nil {
+		return 0, r.recoverErr
+	}
+
+	return r.recoverCount, nil
 }
 
 type workerRepositoryStub struct {
@@ -1151,5 +1167,43 @@ func TestService_Complete_ValidatesResult(t *testing.T) {
 				t.Errorf("lease token = %s, want %s", repo.completedLeaseToken, leaseToken)
 			}
 		})
+	}
+}
+
+func TestService_Recover(t *testing.T) {
+	repo := &taskRepositoryStub{
+		recoverCount: 3,
+	}
+	service := NewService(repo, &workerRepositoryStub{})
+
+	got, err := service.Recover(t.Context())
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+
+	if got != 3 {
+		t.Errorf("Recover() = %d, want 3", got)
+	}
+
+	if !repo.recoverCalled {
+		t.Error("expected RecoverStackTasks to be called")
+	}
+}
+
+func TestService_Recover_RepositoryError(t *testing.T) {
+	recoveryErr := errors.New("database unavailable")
+
+	repo := &taskRepositoryStub{
+		recoverErr: recoveryErr,
+	}
+	service := NewService(repo, &workerRepositoryStub{})
+
+	got, err := service.Recover(t.Context())
+	if !errors.Is(err, recoveryErr) {
+		t.Fatalf("Recover() error = %v, want wrapped %v", err, recoveryErr)
+	}
+
+	if got != 0 {
+		t.Errorf("Recover() = %d, want 0", got)
 	}
 }
