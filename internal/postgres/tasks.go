@@ -235,70 +235,153 @@ func (r *TaskRepository) FindAndClaimForWorker(ctx context.Context, workerID uui
 }
 
 func (r *TaskRepository) RenewTaskLeaseForWorker(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, leaseSeconds int) (time.Time, error) {
-	var leaseExpiresAt time.Time
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
 
-	const updateQuery = `
-    	UPDATE tasks
-    	SET lease_expires_at = clock_timestamp() + ($1 * INTERVAL '1 second')
-    	WHERE id = $2 AND lease_owner = $3 AND lease_token = $4 AND lease_expires_at > clock_timestamp()
-    	RETURNING lease_expires_at
-	`
+	var lockedTaskID uuid.UUID
 
-	err := r.db.QueryRow(ctx, updateQuery, leaseSeconds, taskID, workerID, leaseToken).Scan(&leaseExpiresAt)
+	err = tx.QueryRow(ctx, `SELECT id FROM tasks WHERE id = $1 FOR UPDATE`, taskID).Scan(&lockedTaskID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, task.ErrTaskLeaseLost
 	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("lock task: %w", err)
+	}
+
+	var leaseValid bool
+
+	err = tx.QueryRow(ctx, `
+		SELECT COALESCE(
+			status = 'running'
+			AND lease_owner = $2
+			AND lease_token = $3
+			AND lease_expires_at > clock_timestamp(),
+			false
+		)
+		FROM tasks
+		WHERE id = $1
+	`, taskID, workerID, leaseToken).Scan(&leaseValid)
+
+	if err != nil {
+		return time.Time{}, fmt.Errorf("check task lease: %w", err)
+	}
+	if !leaseValid {
+		return time.Time{}, task.ErrTaskLeaseLost
+	}
+
+	var leaseExpiresAt time.Time
+
+	err = tx.QueryRow(ctx, `
+		UPDATE tasks
+		SET lease_expires_at = clock_timestamp() + ($1 * INTERVAL '1 second')
+		WHERE id = $2
+		RETURNING lease_expires_at
+	`, leaseSeconds, taskID).Scan(&leaseExpiresAt)
 
 	if err != nil {
 		return time.Time{}, fmt.Errorf("renew task lease: %w", err)
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return time.Time{}, fmt.Errorf("commit lease renewal: %w", err)
+	}
+
 	return leaseExpiresAt, nil
 }
-func (r *TaskRepository) MarkTaskAsCompleted(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, result json.RawMessage) error {
+
+func (r *TaskRepository) MarkTaskAsCompleted(
+	ctx context.Context,
+	taskID, workerID, leaseToken uuid.UUID,
+	result json.RawMessage,
+) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	var attemptCount int64
+	// Сначала блокируем задачу.
+	var lockedTaskID uuid.UUID
 
-	const updateTaskQuery = `
-		UPDATE tasks
-		SET status = 'succeeded', result = $1, finished_at = clock_timestamp(), lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
-		WHERE id = $2 AND lease_owner = $3 AND lease_token = $4 AND lease_expires_at > clock_timestamp()
-		RETURNING attempt_count
-	`
-
-	err = tx.QueryRow(ctx, updateTaskQuery, result, taskID, workerID, leaseToken).Scan(&attemptCount)
+	err = tx.QueryRow(ctx, `
+		SELECT id
+		FROM tasks
+		WHERE id = $1
+		FOR UPDATE
+	`, taskID).Scan(&lockedTaskID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return task.ErrTaskLeaseLost
 	}
+	if err != nil {
+		return fmt.Errorf("lock task: %w", err)
+	}
+
+	// Проверяем lease и получаем номер текущей попытки после блокировки.
+	var attemptCount int64
+	var leaseValid bool
+
+	err = tx.QueryRow(ctx, `
+		SELECT
+			attempt_count,
+			COALESCE(
+				status = 'running'
+				AND lease_owner = $2
+				AND lease_token = $3
+				AND lease_expires_at > clock_timestamp(),
+				false
+			)
+		FROM tasks
+		WHERE id = $1
+	`, taskID, workerID, leaseToken).Scan(&attemptCount, &leaseValid)
+
+	if err != nil {
+		return fmt.Errorf("check task lease: %w", err)
+	}
+	if !leaseValid {
+		return task.ErrTaskLeaseLost
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE tasks
+		SET status = 'succeeded',
+		    result = $1,
+		    finished_at = clock_timestamp(),
+		    lease_owner = NULL,
+		    lease_token = NULL,
+		    lease_expires_at = NULL
+		WHERE id = $2
+	`, result, taskID)
 
 	if err != nil {
 		return fmt.Errorf("update task as completed: %w", err)
 	}
 
-	const updateAttemptQuery = `
+	tag, err := tx.Exec(ctx, `
 		UPDATE task_attempts
-		SET outcome = 'succeeded', finished_at = NOW()
-		WHERE task_id = $1 AND attempt_number = $2
-	`
-
-	tag, err := tx.Exec(ctx, updateAttemptQuery, taskID, attemptCount)
+		SET outcome = 'succeeded',
+		    finished_at = clock_timestamp()
+		WHERE task_id = $1
+		  AND attempt_number = $2
+	`, taskID, attemptCount)
 
 	if err != nil {
-		return fmt.Errorf("update task attempts as completed: %w", err)
+		return fmt.Errorf("update task attempt as completed: %w", err)
 	}
 
-	if tag.RowsAffected() == 0 {
+	if tag.RowsAffected() != 1 {
 		return task.ErrTaskAttemptNotFound
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit completed task: %w", err)
+	}
+
+	return nil
 }
 
 func (r *TaskRepository) MarkTaskAsFailed(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, errCode, errMessage string, retryable bool) error {
