@@ -900,7 +900,7 @@ func TestTaskRepository_LeaseExpiresWhileWaitingForRowLock(t *testing.T) {
 	}{
 		{
 			name:         "renew",
-			queryPattern: "%SET lease_expires_at = clock_timestamp()%",
+			queryPattern: "%SELECT id FROM tasks%FOR UPDATE%",
 			run: func(ctx context.Context, repo *TaskRepository, taskToTest task.Task, workerID, token uuid.UUID) error {
 				_, err := repo.RenewTaskLeaseForWorker(
 					ctx, taskToTest.ID, workerID, token, 120,
@@ -910,7 +910,7 @@ func TestTaskRepository_LeaseExpiresWhileWaitingForRowLock(t *testing.T) {
 		},
 		{
 			name:         "complete",
-			queryPattern: "%SET status = 'succeeded'%",
+			queryPattern: "%SELECT id%FOR UPDATE%",
 			run: func(ctx context.Context, repo *TaskRepository, taskToTest task.Task, workerID, token uuid.UUID) error {
 				return repo.MarkTaskAsCompleted(
 					ctx, taskToTest.ID, workerID, token,
