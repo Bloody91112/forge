@@ -53,6 +53,12 @@ type taskRepositoryStub struct {
 	recoverCount  int
 	recoverErr    error
 	recoverCalled bool
+
+	getAttempts         []TaskAttempt
+	getAttemptsErr      error
+	getAttemptsCalled   bool
+	gotAttemptsTaskID   uuid.UUID
+	gotAttemptsClientID uuid.UUID
 }
 
 func (r *taskRepositoryStub) CreateOrGetByIdempotencyKey(
@@ -177,6 +183,21 @@ func (r *taskRepositoryStub) RecoverStackTasks(
 	}
 
 	return r.recoverCount, nil
+}
+
+func (r *taskRepositoryStub) GetAttempts(
+	_ context.Context,
+	taskID, clientID uuid.UUID,
+) ([]TaskAttempt, error) {
+	r.getAttemptsCalled = true
+	r.gotAttemptsTaskID = taskID
+	r.gotAttemptsClientID = clientID
+
+	if r.getAttemptsErr != nil {
+		return nil, r.getAttemptsErr
+	}
+
+	return r.getAttempts, nil
 }
 
 type workerRepositoryStub struct {
@@ -1205,5 +1226,80 @@ func TestService_Recover_RepositoryError(t *testing.T) {
 
 	if got != 0 {
 		t.Errorf("Recover() = %d, want 0", got)
+	}
+}
+
+func TestService_GetAttempts(t *testing.T) {
+	taskID := uuid.New()
+	clientID := uuid.New()
+
+	attempts := []TaskAttempt{
+		{
+			AttemptNumber: 1,
+			WorkerID:      uuid.New(),
+			StartedAt:     time.Now().UTC(),
+		},
+	}
+
+	repo := &taskRepositoryStub{
+		getAttempts: attempts,
+	}
+	service := NewService(repo, &workerRepositoryStub{})
+
+	got, err := service.GetAttempts(
+		WithClientID(t.Context(), clientID),
+		taskID,
+	)
+	if err != nil {
+		t.Fatalf("GetAttempts() error = %v", err)
+	}
+
+	if diff := cmp.Diff(attempts, got); diff != "" {
+		t.Errorf("attempts mismatch (-want +got):\n%s", diff)
+	}
+
+	if !repo.getAttemptsCalled {
+		t.Fatal("repository GetAttempts was not called")
+	}
+
+	if repo.gotAttemptsTaskID != taskID {
+		t.Errorf("task ID = %s, want %s", repo.gotAttemptsTaskID, taskID)
+	}
+
+	if repo.gotAttemptsClientID != clientID {
+		t.Errorf("client ID = %s, want %s", repo.gotAttemptsClientID, clientID)
+	}
+}
+
+func TestService_GetAttemptsWithoutClientID(t *testing.T) {
+	repo := &taskRepositoryStub{}
+	service := NewService(repo, &workerRepositoryStub{})
+
+	_, err := service.GetAttempts(t.Context(), uuid.New())
+
+	if !errors.Is(err, ErrMissingClientID) {
+		t.Fatalf("error = %v, want %v", err, ErrMissingClientID)
+	}
+
+	if repo.getAttemptsCalled {
+		t.Fatal("repository must not be called without client ID")
+	}
+}
+
+func TestService_GetAttemptsPropagatesRepositoryError(t *testing.T) {
+	repositoryErr := errors.New("database unavailable")
+
+	repo := &taskRepositoryStub{
+		getAttemptsErr: repositoryErr,
+	}
+	service := NewService(repo, &workerRepositoryStub{})
+
+	_, err := service.GetAttempts(
+		WithClientID(t.Context(), uuid.New()),
+		uuid.New(),
+	)
+
+	if !errors.Is(err, repositoryErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, repositoryErr)
 	}
 }

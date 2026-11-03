@@ -38,7 +38,7 @@ type TaskAttemptResponse struct {
 	WorkerID      uuid.UUID          `json:"worker_id"`
 	StartedAt     time.Time          `json:"started_at"`
 	FinishedAt    *time.Time         `json:"finished_at"`
-	Outcome       string             `json:"outcome"`
+	Outcome       *string            `json:"outcome"`
 	Error         *TaskErrorResponse `json:"error"`
 }
 

@@ -36,6 +36,10 @@ type FakeTaskService struct {
 
 	failErr   error
 	failInput task.FailTaskInput
+
+	attempts       []task.TaskAttempt
+	attemptsErr    error
+	attemptsTaskID uuid.UUID
 }
 
 func (s *FakeTaskService) GetByID(ctx context.Context, taskID uuid.UUID) (task.Task, error) {
@@ -69,6 +73,11 @@ func (s *FakeTaskService) Complete(ctx context.Context, dto task.CompleteTaskInp
 func (s *FakeTaskService) Fail(ctx context.Context, dto task.FailTaskInput) error {
 	s.failInput = dto
 	return s.failErr
+}
+
+func (s *FakeTaskService) GetAttempts(ctx context.Context, taskID uuid.UUID) ([]task.TaskAttempt, error) {
+	s.attemptsTaskID = taskID
+	return s.attempts, s.attemptsErr
 }
 
 func TestTaskHandler_CreateTask(t *testing.T) {
@@ -1002,6 +1011,156 @@ func TestTaskHandler_FailTask(t *testing.T) {
 			}
 			if !*service.failInput.Retryable {
 				t.Error("retryable = false, want true")
+			}
+		})
+	}
+}
+
+func TestTaskHandler_GetTaskAttempts(t *testing.T) {
+	taskID := uuid.New()
+	workerID := uuid.New()
+
+	startedAt := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+
+	outcome := "retryable_error"
+	errorCode := "temporary_failure"
+	errorMessage := "Temporary failure"
+
+	attempts := []task.TaskAttempt{
+		{
+			AttemptNumber: 1,
+			WorkerID:      workerID,
+			StartedAt:     startedAt,
+			FinishedAt:    &finishedAt,
+			Outcome:       &outcome,
+			ErrorCode:     &errorCode,
+			ErrorMessage:  &errorMessage,
+		},
+		{
+			AttemptNumber: 2,
+			WorkerID:      workerID,
+			StartedAt:     finishedAt,
+		},
+	}
+
+	tests := []struct {
+		name         string
+		pathID       string
+		attempts     []task.TaskAttempt
+		serviceErr   error
+		wantStatus   int
+		wantErrCode  string
+		wantResponse *GetTaskAttemptsResponse
+	}{
+		{
+			name:        "invalid task ID",
+			pathID:      "invalid-id",
+			wantStatus:  http.StatusBadRequest,
+			wantErrCode: httpresponse.ErrCodeInvalidTaskID,
+		},
+		{
+			name:        "task not found",
+			pathID:      taskID.String(),
+			serviceErr:  task.ErrTaskNotFound,
+			wantStatus:  http.StatusNotFound,
+			wantErrCode: httpresponse.ErrCodeTaskNotFound,
+		},
+		{
+			name:        "missing client ID",
+			pathID:      taskID.String(),
+			serviceErr:  task.ErrMissingClientID,
+			wantStatus:  http.StatusInternalServerError,
+			wantErrCode: httpresponse.ErrCodeGetTaskFailed,
+		},
+		{
+			name:        "internal error",
+			pathID:      taskID.String(),
+			serviceErr:  errors.New("database unavailable"),
+			wantStatus:  http.StatusInternalServerError,
+			wantErrCode: httpresponse.ErrCodeGetTaskFailed,
+		},
+		{
+			name:       "success",
+			pathID:     taskID.String(),
+			attempts:   attempts,
+			wantStatus: http.StatusOK,
+			wantResponse: func() *GetTaskAttemptsResponse {
+				response := newGetTaskAttemptsResponse(taskID, attempts)
+				return &response
+			}(),
+		},
+		{
+			name:       "empty attempts",
+			pathID:     taskID.String(),
+			attempts:   []task.TaskAttempt{},
+			wantStatus: http.StatusOK,
+			wantResponse: func() *GetTaskAttemptsResponse {
+				response := newGetTaskAttemptsResponse(taskID, []task.TaskAttempt{})
+				return &response
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &FakeTaskService{
+				attempts:    tt.attempts,
+				attemptsErr: tt.serviceErr,
+			}
+			handler := NewTaskHandler(service)
+
+			mux := http.NewServeMux()
+			mux.HandleFunc(
+				"GET /api/v1/tasks/{id}/attempts",
+				handler.GetTaskAttempts,
+			)
+
+			req := httptest.NewRequest(
+				http.MethodGet,
+				"/api/v1/tasks/"+tt.pathID+"/attempts",
+				nil,
+			)
+
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+
+			if tt.wantErrCode != "" {
+				assertJSONErrorResponse(
+					t,
+					rr,
+					tt.wantStatus,
+					tt.wantErrCode,
+				)
+				return
+			}
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf(
+					"HTTP status = %d, want %d; body: %s",
+					rr.Code,
+					tt.wantStatus,
+					rr.Body.String(),
+				)
+			}
+
+			assertJSONContentType(t, rr)
+
+			if service.attemptsTaskID != taskID {
+				t.Errorf(
+					"service task ID = %s, want %s",
+					service.attemptsTaskID,
+					taskID,
+				)
+			}
+
+			var got GetTaskAttemptsResponse
+			if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+				t.Fatalf("decode attempts response: %v", err)
+			}
+
+			if diff := cmp.Diff(*tt.wantResponse, got); diff != "" {
+				t.Errorf("response mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

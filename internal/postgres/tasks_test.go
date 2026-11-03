@@ -1377,3 +1377,157 @@ func TestFullJitterBackoff(t *testing.T) {
 		})
 	}
 }
+
+func TestTaskRepository_GetAttempts(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+
+	workerID := uuid.New()
+
+	_, err := db.Exec(
+		t.Context(),
+		`INSERT INTO workers (
+			id, token_hash, protocol_version, capabilities, lease_expires_at
+		) VALUES ($1, $2, $3, $4::jsonb, NOW() + INTERVAL '1 hour')`,
+		workerID,
+		"test-token-hash",
+		"1",
+		`["email-send"]`,
+	)
+	if err != nil {
+		t.Fatalf("insert worker: %v", err)
+	}
+
+	expectedTask := newTestTask(clientID)
+
+	if _, _, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expectedTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	startedAt := time.Now().UTC().Truncate(time.Microsecond)
+	finishedAt := startedAt.Add(time.Second)
+
+	_, err = db.Exec(t.Context(), `
+		INSERT INTO task_attempts (
+			id,
+			task_id,
+			attempt_number,
+			worker_id,
+			started_at,
+			finished_at,
+			outcome,
+			error_code,
+			error_message
+		)
+		VALUES
+			($1, $2, 1, $3, $4, $5, 'retryable_error', 'temporary_failure', 'Temporary failure'),
+			($6, $2, 2, $3, $7, NULL, NULL, NULL, NULL)
+	`,
+		uuid.New(),
+		expectedTask.ID,
+		workerID,
+		startedAt,
+		finishedAt,
+		uuid.New(),
+		finishedAt,
+	)
+	if err != nil {
+		t.Fatalf("insert task attempts: %v", err)
+	}
+
+	got, err := repo.GetAttempts(t.Context(), expectedTask.ID, clientID)
+	if err != nil {
+		t.Fatalf("GetAttempts() error = %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("attempt count = %d, want 2", len(got))
+	}
+
+	first := got[0]
+
+	if first.AttemptNumber != 1 {
+		t.Errorf("first attempt number = %d, want 1", first.AttemptNumber)
+	}
+	if first.WorkerID != workerID {
+		t.Errorf("first worker ID = %s, want %s", first.WorkerID, workerID)
+	}
+	if !first.StartedAt.Equal(startedAt) {
+		t.Errorf("first started_at = %v, want %v", first.StartedAt, startedAt)
+	}
+	if first.FinishedAt == nil || !first.FinishedAt.Equal(finishedAt) {
+		t.Errorf("first finished_at = %v, want %v", first.FinishedAt, finishedAt)
+	}
+	if first.Outcome == nil || *first.Outcome != "retryable_error" {
+		t.Errorf("first outcome = %v, want retryable_error", first.Outcome)
+	}
+	if first.ErrorCode == nil || *first.ErrorCode != "temporary_failure" {
+		t.Errorf("first error code = %v, want temporary_failure", first.ErrorCode)
+	}
+	if first.ErrorMessage == nil || *first.ErrorMessage != "Temporary failure" {
+		t.Errorf("first error message = %v, want Temporary failure", first.ErrorMessage)
+	}
+
+	second := got[1]
+
+	if second.AttemptNumber != 2 {
+		t.Errorf("second attempt number = %d, want 2", second.AttemptNumber)
+	}
+	if second.FinishedAt != nil {
+		t.Errorf("second finished_at = %v, want nil", second.FinishedAt)
+	}
+	if second.Outcome != nil {
+		t.Errorf("second outcome = %v, want nil", second.Outcome)
+	}
+	if second.ErrorCode != nil || second.ErrorMessage != nil {
+		t.Errorf("second error = (%v, %v), want (nil, nil)", second.ErrorCode, second.ErrorMessage)
+	}
+}
+
+func TestTaskRepository_GetAttemptsReturnsEmptySliceWhenTaskHasNoAttempts(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+
+	expectedTask := newTestTask(clientID)
+
+	if _, _, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expectedTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	got, err := repo.GetAttempts(t.Context(), expectedTask.ID, clientID)
+	if err != nil {
+		t.Fatalf("GetAttempts() error = %v", err)
+	}
+
+	if got == nil {
+		t.Fatal("attempts = nil, want empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("attempt count = %d, want 0", len(got))
+	}
+}
+
+func TestTaskRepository_GetAttemptsHidesTaskFromAnotherClient(t *testing.T) {
+	db := openTestDB(t)
+	clientID := createTestClient(t, db)
+	otherClientID := createTestClient(t, db)
+	repo := NewTaskRepository(db)
+
+	expectedTask := newTestTask(clientID)
+
+	if _, _, err := repo.CreateOrGetByIdempotencyKey(t.Context(), expectedTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	_, err := repo.GetAttempts(t.Context(), expectedTask.ID, otherClientID)
+	if !errors.Is(err, task.ErrTaskNotFound) {
+		t.Errorf("GetAttempts() error = %v, want %v", err, task.ErrTaskNotFound)
+	}
+
+	_, err = repo.GetAttempts(t.Context(), uuid.New(), clientID)
+	if !errors.Is(err, task.ErrTaskNotFound) {
+		t.Errorf("GetAttempts() for missing task error = %v, want %v", err, task.ErrTaskNotFound)
+	}
+}

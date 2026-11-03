@@ -44,7 +44,7 @@ type TaskAttempt struct {
 	WorkerID      uuid.UUID
 	StartedAt     time.Time
 	FinishedAt    *time.Time
-	Outcome       string
+	Outcome       *string
 	ErrorCode     *string
 	ErrorMessage  *string
 }
