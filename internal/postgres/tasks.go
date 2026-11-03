@@ -609,6 +609,68 @@ func (r *TaskRepository) RecoverStackTasks(ctx context.Context) (int, error) {
 	return len(expiredTasks), nil
 }
 
+func (r *TaskRepository) GetAttempts(ctx context.Context, taskID, clientID uuid.UUID) ([]task.TaskAttempt, error) {
+	var id uuid.UUID
+
+	err := r.db.QueryRow(ctx, `
+		SELECT id
+		FROM tasks
+		WHERE id = $1 AND client_id = $2
+	`, taskID, clientID).Scan(&id)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, task.ErrTaskNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get task: %w", err)
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT
+			attempt_number,
+			worker_id,
+			started_at,
+			finished_at,
+			outcome,
+			error_code,
+			error_message
+		FROM task_attempts
+		WHERE task_id = $1
+		ORDER BY attempt_number
+	`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("get task attempts: %w", err)
+	}
+	defer rows.Close()
+
+	attempts := make([]task.TaskAttempt, 0)
+
+	for rows.Next() {
+		var attempt task.TaskAttempt
+
+		err := rows.Scan(
+			&attempt.AttemptNumber,
+			&attempt.WorkerID,
+			&attempt.StartedAt,
+			&attempt.FinishedAt,
+			&attempt.Outcome,
+			&attempt.ErrorCode,
+			&attempt.ErrorMessage,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan task attempt: %w", err)
+		}
+
+		attempts = append(attempts, attempt)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate task attempts: %w", err)
+	}
+
+	return attempts, nil
+}
+
 func fullJitterBackoff(attempt int) time.Duration {
 	seconds := min(
 		time.Second*time.Duration(1<<(attempt-1)),

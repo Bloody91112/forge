@@ -105,6 +105,7 @@ func runServer() error {
 	clientMux := http.NewServeMux()
 	clientMux.HandleFunc("POST /api/v1/tasks", taskHandler.CreateTask)
 	clientMux.HandleFunc("GET /api/v1/tasks/{id}", taskHandler.GetTask)
+	clientMux.HandleFunc("GET /api/v1/tasks/{id}/attempts", taskHandler.GetTaskAttempts)
 	mux.Handle("/api/v1/", middleware.Auth(authService, clientMux))
 
 	server := &http.Server{

@@ -56,6 +56,7 @@ type Repository interface {
 	MarkTaskAsCompleted(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, result json.RawMessage) error
 	MarkTaskAsFailed(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, errCode, errMessage string, retryable bool) error
 	RecoverStackTasks(ctx context.Context) (int, error)
+	GetAttempts(ctx context.Context, taskID, clientID uuid.UUID) ([]TaskAttempt, error)
 }
 
 type WorkerRepository interface {
@@ -311,6 +312,20 @@ func (s *Service) Recover(ctx context.Context) (int, error) {
 	}
 
 	return count, nil
+}
+
+func (s *Service) GetAttempts(ctx context.Context, taskID uuid.UUID) ([]TaskAttempt, error) {
+	clientID, ok := ClientIDFromContext(ctx)
+	if !ok {
+		return nil, ErrMissingClientID
+	}
+
+	attempts, err := s.repo.GetAttempts(ctx, taskID, clientID)
+	if err != nil {
+		return nil, fmt.Errorf("get task attempts: %w", err)
+	}
+
+	return attempts, nil
 }
 
 func calculateRequestHash(payload json.RawMessage, taskType string, timeoutSeconds int64, maxAttempts int64) (string, error) {

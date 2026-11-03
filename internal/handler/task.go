@@ -26,6 +26,7 @@ type TaskService interface {
 	Renew(ctx context.Context, dto task.RenewTaskInput) (time.Time, error)
 	Complete(ctx context.Context, dto task.CompleteTaskInput) error
 	Fail(ctx context.Context, dto task.FailTaskInput) error
+	GetAttempts(ctx context.Context, taskID uuid.UUID) ([]task.TaskAttempt, error)
 }
 
 func NewTaskHandler(service TaskService) *TaskHandler {
@@ -291,6 +292,39 @@ func (h *TaskHandler) FailTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *TaskHandler) GetTaskAttempts(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpresponse.ResponseError(w, http.StatusBadRequest, httpresponse.ErrCodeInvalidTaskID, "Invalid task id")
+		return
+	}
+
+	attempts, err := h.service.GetAttempts(r.Context(), id)
+
+	if errors.Is(err, task.ErrTaskNotFound) {
+		httpresponse.ResponseError(w, http.StatusNotFound, httpresponse.ErrCodeTaskNotFound, "Task not found")
+		return
+	}
+
+	if errors.Is(err, task.ErrMissingClientID) {
+		log.Printf("no client id provided, err: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeGetTaskFailed, "Failed to get task attempts")
+		return
+	}
+
+	if err != nil {
+		log.Printf("failed to get task attempts: %v", err)
+		httpresponse.ResponseError(w, http.StatusInternalServerError, httpresponse.ErrCodeGetTaskFailed, "Failed to get task attempts")
+		return
+	}
+
+	response := newGetTaskAttemptsResponse(id, attempts)
+
+	if err := h.baseHandler.EncodeJSONResponse(w, http.StatusOK, "got task attempts", response); err != nil {
+		log.Print(err)
+	}
 }
 
 func (h *TaskHandler) validateContentTypeAndGetTaskID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {

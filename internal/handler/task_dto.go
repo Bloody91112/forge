@@ -28,6 +28,20 @@ type GetTaskResponse struct {
 	FinishedAt   *time.Time         `json:"finished_at"`
 }
 
+type GetTaskAttemptsResponse struct {
+	TaskID   uuid.UUID             `json:"task_id"`
+	Attempts []TaskAttemptResponse `json:"attempts"`
+}
+
+type TaskAttemptResponse struct {
+	AttemptNumber int64              `json:"attempt_number"`
+	WorkerID      uuid.UUID          `json:"worker_id"`
+	StartedAt     time.Time          `json:"started_at"`
+	FinishedAt    *time.Time         `json:"finished_at"`
+	Outcome       string             `json:"outcome"`
+	Error         *TaskErrorResponse `json:"error"`
+}
+
 type ClaimTaskItemResponse struct {
 	ID             uuid.UUID       `json:"id"`
 	Type           string          `json:"type"`
@@ -95,4 +109,33 @@ func newGetTaskResponse(t task.Task) GetTaskResponse {
 		StartedAt:    t.StartedAt,
 		FinishedAt:   t.FinishedAt,
 	}
+}
+
+func newGetTaskAttemptsResponse(taskID uuid.UUID, attempts []task.TaskAttempt) GetTaskAttemptsResponse {
+	response := GetTaskAttemptsResponse{
+		TaskID:   taskID,
+		Attempts: make([]TaskAttemptResponse, 0, len(attempts)),
+	}
+
+	for _, attempt := range attempts {
+		var attemptError *TaskErrorResponse
+
+		if attempt.ErrorCode != nil || attempt.ErrorMessage != nil {
+			attemptError = &TaskErrorResponse{
+				Code:    attempt.ErrorCode,
+				Message: attempt.ErrorMessage,
+			}
+		}
+
+		response.Attempts = append(response.Attempts, TaskAttemptResponse{
+			AttemptNumber: attempt.AttemptNumber,
+			WorkerID:      attempt.WorkerID,
+			StartedAt:     attempt.StartedAt,
+			FinishedAt:    attempt.FinishedAt,
+			Outcome:       attempt.Outcome,
+			Error:         attemptError,
+		})
+	}
+
+	return response
 }

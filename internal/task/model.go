@@ -38,3 +38,13 @@ type Task struct {
 	StartedAt      *time.Time
 	FinishedAt     *time.Time
 }
+
+type TaskAttempt struct {
+	AttemptNumber int64
+	WorkerID      uuid.UUID
+	StartedAt     time.Time
+	FinishedAt    *time.Time
+	Outcome       string
+	ErrorCode     *string
+	ErrorMessage  *string
+}
