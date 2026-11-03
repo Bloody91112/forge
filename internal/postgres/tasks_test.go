@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"forge/internal/task"
 	"forge/internal/testutil"
 	"sync"
@@ -1247,5 +1248,132 @@ func TestTaskRepository_RecoverStackTasks_RollsBackWhenAttemptMissing(t *testing
 	}
 	if leaseOwner == nil || leaseToken == nil || leaseExpiry == nil {
 		t.Error("lease fields must remain unchanged after rollback")
+	}
+}
+
+func TestTaskRepository_RecoverStackTasks_LimitsBatchTo100(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	const taskCount = 101
+
+	tasks := make([]task.Task, 0, taskCount)
+
+	for range taskCount {
+		expected, _, _ := createRunningTask(t, db, repo)
+		expireTaskLease(t, db, expected.ID)
+		tasks = append(tasks, expected)
+	}
+
+	recovered, err := repo.RecoverStackTasks(t.Context())
+	if err != nil {
+		t.Fatalf("RecoverStackTasks(): %v", err)
+	}
+
+	if recovered != 100 {
+		t.Fatalf("recovered = %d, want 100", recovered)
+	}
+
+	var queuedCount int
+	err = db.QueryRow(t.Context(), `
+		SELECT COUNT(*)
+		FROM tasks
+		WHERE status = 'queued'
+		  AND id = ANY($1)
+	`, taskIDs(tasks)).Scan(&queuedCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if queuedCount != 100 {
+		t.Errorf("queued tasks = %d, want 100", queuedCount)
+	}
+}
+
+func taskIDs(tasks []task.Task) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(tasks))
+
+	for _, gotTask := range tasks {
+		ids = append(ids, gotTask.ID)
+	}
+
+	return ids
+}
+
+func TestTaskRepository_RecoverStackTasks_SkipsLockedTasks(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	expected, _, _ := createRunningTask(t, db, repo)
+	expireTaskLease(t, db, expected.ID)
+
+	tx, err := db.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+
+	var lockedID uuid.UUID
+	err = tx.QueryRow(t.Context(), `
+		SELECT id
+		FROM tasks
+		WHERE id = $1
+		FOR UPDATE
+	`, expected.ID).Scan(&lockedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := repo.RecoverStackTasks(t.Context())
+	if err != nil {
+		t.Fatalf("RecoverStackTasks(): %v", err)
+	}
+
+	if recovered != 0 {
+		t.Fatalf("recovered = %d, want 0", recovered)
+	}
+
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err = repo.RecoverStackTasks(t.Context())
+	if err != nil {
+		t.Fatalf("RecoverStackTasks() after unlock: %v", err)
+	}
+
+	if recovered != 1 {
+		t.Errorf("recovered after unlock = %d, want 1", recovered)
+	}
+}
+
+func TestFullJitterBackoff(t *testing.T) {
+	tests := []struct {
+		attempt int
+		max     time.Duration
+	}{
+		{attempt: 1, max: time.Second},
+		{attempt: 2, max: 2 * time.Second},
+		{attempt: 3, max: 4 * time.Second},
+		{attempt: 9, max: 256 * time.Second},
+		{attempt: 10, max: 300 * time.Second},
+		{attempt: 20, max: 300 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("attempt_%d", tt.attempt), func(t *testing.T) {
+			for range 100 {
+				got := fullJitterBackoff(tt.attempt)
+
+				if got < 0 || got > tt.max {
+					t.Fatalf(
+						"fullJitterBackoff(%d) = %v, want [0, %v]",
+						tt.attempt,
+						got,
+						tt.max,
+					)
+				}
+			}
+		})
 	}
 }
