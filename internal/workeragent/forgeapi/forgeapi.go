@@ -178,17 +178,21 @@ func (c *Client) newRequest(ctx context.Context, token string, path string, inpu
 }
 
 func parseError(resp *http.Response) error {
+	remoteErr := &RemoteError{
+		StatusCode: resp.StatusCode,
+	}
+
 	var body errorResponse
 
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return fmt.Errorf("decode Forge error response (status %d): %w", resp.StatusCode, err)
+		remoteErr.Message = fmt.Sprintf("failed to decode error response: %v", err)
+		return remoteErr
 	}
 
-	return &RemoteError{
-		StatusCode: resp.StatusCode,
-		Code:       body.Error.Code,
-		Message:    body.Error.Message,
-	}
+	remoteErr.Code = body.Error.Code
+	remoteErr.Message = body.Error.Message
+
+	return remoteErr
 }
 
 func decodeResponse(resp *http.Response, output any) error {

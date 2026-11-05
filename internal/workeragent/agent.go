@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"forge/internal/workeragent/forgeapi"
 	"forge/internal/workeragent/task"
+	"net/http"
+	"net/url"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,6 +41,7 @@ type Agent struct {
 	capabilities   []string
 	// initial
 	workerID              uuid.UUID
+	tokenMu               sync.RWMutex
 	workerToken           string
 	registrationExpiresAt time.Time
 
@@ -83,7 +87,7 @@ func (a *Agent) registerAtForge(ctx context.Context) error {
 	}
 
 	a.registrationExpiresAt = resp.LeaseExpiresAt
-	a.workerToken = resp.WorkerToken
+	a.setWorkerToken(resp.WorkerToken)
 
 	return nil
 }
@@ -97,10 +101,15 @@ func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			resp, err := a.client.Heartbeat(ctx, a.workerToken, forgeapi.HeartbeatRequest{WorkerID: a.workerID})
+			resp, err := a.client.Heartbeat(ctx, a.getWorkerToken(), forgeapi.HeartbeatRequest{WorkerID: a.workerID})
+
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil
+				}
+
+				if isRetryableHeartbeatError(err) {
+					continue
 				}
 
 				return fmt.Errorf("heartbeat worker: %w", err)
@@ -136,7 +145,7 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 }
 
 func (a *Agent) claimTaskRequest(ctx context.Context) (*forgeapi.ClaimedTask, error) {
-	resp, err := a.client.ClaimTask(ctx, a.workerToken, forgeapi.ClaimTaskRequest{WorkerID: a.workerID})
+	resp, err := a.client.ClaimTask(ctx, a.getWorkerToken(), forgeapi.ClaimTaskRequest{WorkerID: a.workerID})
 	if err != nil {
 		return nil, fmt.Errorf("claim task: %w", err)
 	}
@@ -150,7 +159,7 @@ func (a *Agent) claimTaskRequest(ctx context.Context) (*forgeapi.ClaimedTask, er
 
 func (a *Agent) renewTaskLease(ctx context.Context) error {
 	req := forgeapi.RenewTaskRequest{WorkerID: a.workerID, LeaseToken: a.leaseToken}
-	resp, err := a.client.RenewTaskLease(ctx, a.workerToken, a.taskID, req)
+	resp, err := a.client.RenewTaskLease(ctx, a.getWorkerToken(), a.taskID, req)
 
 	if err != nil {
 		return err
@@ -168,7 +177,7 @@ func (a *Agent) notifyTaskFail(ctx context.Context, taskError task.ServiceError)
 		Retryable:  taskError.Retryable,
 	}
 
-	err := a.client.FailTask(ctx, a.workerToken, a.taskID, req)
+	err := a.client.FailTask(ctx, a.getWorkerToken(), a.taskID, req)
 
 	if err != nil {
 		return fmt.Errorf("notify about task fail: %w", err)
@@ -193,7 +202,7 @@ func (a *Agent) notifyTaskComplete(ctx context.Context, taskResult task.ServiceR
 		Result:     json.RawMessage(result),
 	}
 
-	if err := a.client.CompleteTask(ctx, a.workerToken, a.taskID, req); err != nil {
+	if err := a.client.CompleteTask(ctx, a.getWorkerToken(), a.taskID, req); err != nil {
 		return fmt.Errorf("notify about task complete: %w", err)
 	}
 
@@ -208,4 +217,32 @@ func toTask(claimed forgeapi.ClaimedTask) task.Task {
 		AttemptNumber: claimed.AttemptNumber,
 		Timeout:       time.Duration(claimed.TimeoutSeconds) * time.Second,
 	}
+}
+
+func isRetryableHeartbeatError(err error) bool {
+	var remoteErr *forgeapi.RemoteError
+	if errors.As(err, &remoteErr) {
+		return remoteErr.StatusCode == http.StatusInternalServerError
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+
+	return false
+}
+
+func (a *Agent) getWorkerToken() string {
+	a.tokenMu.RLock()
+	defer a.tokenMu.RUnlock()
+
+	return a.workerToken
+}
+
+func (a *Agent) setWorkerToken(token string) {
+	a.tokenMu.Lock()
+	defer a.tokenMu.Unlock()
+
+	a.workerToken = token
 }
