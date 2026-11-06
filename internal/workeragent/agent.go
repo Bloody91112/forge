@@ -19,6 +19,7 @@ const Protocol = "1"
 const ClaimTaskPeriodSeconds = 10
 
 var ErrWorkerIDConflict = errors.New("worker id conflict")
+var ErrUnauthorized = errors.New("worker unauthorized")
 
 type ForgeClient interface {
 	Register(ctx context.Context, bootstrapToken string, input forgeapi.RegisterRequest) (forgeapi.RegisterResponse, error)
@@ -108,7 +109,11 @@ func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
 					return nil
 				}
 
-				if isRetryableHeartbeatError(err) {
+				if isForgeAuthFailedError(err) {
+					return ErrUnauthorized
+				}
+
+				if isRetryableForgeError(err) {
 					continue
 				}
 
@@ -125,8 +130,23 @@ func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
 }
 
 func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask, error) {
-	if claimedTask, err := a.claimTaskRequest(ctx); err != nil || claimedTask != nil {
-		return claimedTask, err
+	claimedTask, err := a.claimTaskRequest(ctx)
+	if claimedTask != nil {
+		return claimedTask, nil
+	}
+
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, nil
+		}
+
+		if isForgeAuthFailedError(err) {
+			return nil, ErrUnauthorized
+		}
+
+		if !isRetryableForgeError(err) {
+			return nil, fmt.Errorf("claim task: %w", err)
+		}
 	}
 
 	ticker := time.NewTicker(ClaimTaskPeriodSeconds * time.Second)
@@ -137,8 +157,24 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 		case <-ctx.Done():
 			return nil, nil
 		case <-ticker.C:
-			if claimedTask, err := a.claimTaskRequest(ctx); err != nil || claimedTask != nil {
-				return claimedTask, err
+			claimedTask, err := a.claimTaskRequest(ctx)
+			if claimedTask != nil {
+				return claimedTask, nil
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, nil
+				}
+
+				if isForgeAuthFailedError(err) {
+					return nil, ErrUnauthorized
+				}
+
+				if isRetryableForgeError(err) {
+					continue
+				}
+
+				return nil, fmt.Errorf("claim task: %w", err)
 			}
 		}
 	}
@@ -219,7 +255,7 @@ func toTask(claimed forgeapi.ClaimedTask) task.Task {
 	}
 }
 
-func isRetryableHeartbeatError(err error) bool {
+func isRetryableForgeError(err error) bool {
 	var remoteErr *forgeapi.RemoteError
 	if errors.As(err, &remoteErr) {
 		return remoteErr.StatusCode == http.StatusInternalServerError
@@ -230,6 +266,14 @@ func isRetryableHeartbeatError(err error) bool {
 		return true
 	}
 
+	return false
+}
+
+func isForgeAuthFailedError(err error) bool {
+	var remoteErr *forgeapi.RemoteError
+	if errors.As(err, &remoteErr) {
+		return remoteErr.StatusCode == http.StatusUnauthorized
+	}
 	return false
 }
 
