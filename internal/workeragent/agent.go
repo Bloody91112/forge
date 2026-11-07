@@ -25,6 +25,17 @@ type UnauthorizedError struct {
 	Token string
 }
 
+type cycleResult struct {
+	name string
+	task *forgeapi.ClaimedTask
+	err  error
+}
+
+const (
+	cycleHeartbeat = "heartbeat"
+	cycleClaimTask = "claim-task"
+)
+
 func (e *UnauthorizedError) Error() string {
 	return ErrUnauthorized.Error()
 }
@@ -75,11 +86,100 @@ func NewAgent(client ForgeClient, taskService TaskService, bootstrapToken string
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	if err := a.registerAtForge(ctx); err != nil {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if err := a.registerAtForge(runCtx); err != nil {
+		if runCtx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 
-	return nil
+	cycleResults := make(chan cycleResult, 2)
+
+	startHeartbeat := func() {
+		go func() {
+			cycleResults <- cycleResult{name: cycleHeartbeat, err: a.startHeartbeatCycle(runCtx)}
+		}()
+	}
+
+	startClaimTask := func() {
+		go func() {
+			claimedTask, err := a.startClaimTaskCycle(runCtx)
+			cycleResults <- cycleResult{name: cycleClaimTask, task: claimedTask, err: err}
+		}()
+	}
+
+	startHeartbeat()
+	startClaimTask()
+
+	for {
+		select {
+		case <-runCtx.Done():
+			return nil
+
+		case result := <-cycleResults:
+			if runCtx.Err() != nil {
+				return nil
+			}
+
+			if errors.Is(result.err, ErrUnauthorized) {
+				var authErr *UnauthorizedError
+				if !errors.As(result.err, &authErr) {
+					return fmt.Errorf("invalid authorization error: %w", result.err)
+				}
+
+				// Проверяем, не обновил ли другой цикл токен.
+				if authErr.Token == a.getWorkerToken() {
+					if err := a.registerWithRetry(runCtx); err != nil {
+						if runCtx.Err() != nil {
+							return nil
+						}
+						return err
+					}
+				}
+
+				switch result.name {
+				case cycleHeartbeat:
+					startHeartbeat()
+				case cycleClaimTask:
+					startClaimTask()
+				default:
+					return fmt.Errorf("unknown cycle: %s", result.name)
+				}
+
+				continue
+			}
+
+			if result.err != nil {
+				return fmt.Errorf("%s cycle: %w", result.name, result.err)
+			}
+
+			if result.task != nil {
+				serviceResult, err := a.taskService.Process(runCtx, toTask(*result.task))
+
+				if err != nil {
+					return fmt.Errorf("unknown service err: %w", err)
+				}
+
+				if serviceResult.Error != nil {
+					if err := a.notifyTaskFail(runCtx, *serviceResult.Error); err != nil {
+						return fmt.Errorf("failed to notify forge about task fail, err: %w", err)
+					}
+				} else {
+					if err := a.notifyTaskComplete(runCtx, serviceResult); err != nil {
+						return fmt.Errorf("failed to notify forge about task complete, err: %w", err)
+					}
+				}
+
+				// После завершения обработки перезапустим claim.
+				startClaimTask()
+			}
+
+		}
+	}
+
 }
 
 func (a *Agent) registerAtForge(ctx context.Context) error {
@@ -103,6 +203,25 @@ func (a *Agent) registerAtForge(ctx context.Context) error {
 	a.setWorkerToken(resp.WorkerToken)
 
 	return nil
+}
+
+func (a *Agent) registerWithRetry(ctx context.Context) error {
+	var lastErr error
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if err := a.registerAtForge(ctx); err != nil {
+			lastErr = err
+			continue
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("worker re-registration failed after 3 attempts: %w", lastErr)
 }
 
 func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
