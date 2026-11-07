@@ -21,6 +21,18 @@ const ClaimTaskPeriodSeconds = 10
 var ErrWorkerIDConflict = errors.New("worker id conflict")
 var ErrUnauthorized = errors.New("worker unauthorized")
 
+type UnauthorizedError struct {
+	Token string
+}
+
+func (e *UnauthorizedError) Error() string {
+	return ErrUnauthorized.Error()
+}
+
+func (e *UnauthorizedError) Unwrap() error {
+	return ErrUnauthorized
+}
+
 type ForgeClient interface {
 	Register(ctx context.Context, bootstrapToken string, input forgeapi.RegisterRequest) (forgeapi.RegisterResponse, error)
 	Heartbeat(ctx context.Context, workerToken string, input forgeapi.HeartbeatRequest) (forgeapi.HeartbeatResponse, error)
@@ -110,7 +122,7 @@ func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
 				}
 
 				if isForgeAuthFailedError(err) {
-					return ErrUnauthorized
+					return &UnauthorizedError{Token: a.workerToken}
 				}
 
 				if isRetryableForgeError(err) {
@@ -141,7 +153,7 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 		}
 
 		if isForgeAuthFailedError(err) {
-			return nil, ErrUnauthorized
+			return nil, &UnauthorizedError{Token: a.workerToken}
 		}
 
 		if !isRetryableForgeError(err) {
@@ -167,7 +179,7 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 				}
 
 				if isForgeAuthFailedError(err) {
-					return nil, ErrUnauthorized
+					return nil, &UnauthorizedError{Token: a.workerToken}
 				}
 
 				if isRetryableForgeError(err) {
