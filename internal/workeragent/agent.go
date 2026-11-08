@@ -177,7 +177,12 @@ func (a *Agent) processTask(ctx context.Context, claimedTask *forgeapi.ClaimedTa
 	a.leaseToken = claimedTask.LeaseToken
 	a.leaseExpiresAt = claimedTask.LeaseExpiresAt
 
-	serviceResult, err := a.taskService.Process(ctx, toTask(*claimedTask))
+	taskForService := toTask(*claimedTask)
+
+	taskCtx, cancel := context.WithTimeout(ctx, taskForService.Timeout)
+	defer cancel()
+
+	serviceResult, err := a.taskService.Process(taskCtx, taskForService)
 	return taskProcessResult{result: serviceResult, err: err}
 }
 
