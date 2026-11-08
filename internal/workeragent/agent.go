@@ -157,7 +157,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 			if result.task != nil {
 				go func() {
-					taskResults <- a.processTask(ctx, result.task)
+					taskResults <- a.processTask(runCtx, result.task)
 				}()
 			}
 
@@ -232,7 +232,8 @@ func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			resp, err := a.client.Heartbeat(ctx, a.getWorkerToken(), forgeapi.HeartbeatRequest{WorkerID: a.workerID})
+			workerToken := a.getWorkerToken()
+			resp, err := a.client.Heartbeat(ctx, workerToken, forgeapi.HeartbeatRequest{WorkerID: a.workerID})
 
 			if err != nil {
 				if ctx.Err() != nil {
@@ -240,7 +241,7 @@ func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
 				}
 
 				if isForgeAuthFailedError(err) {
-					return &UnauthorizedError{Token: a.getWorkerToken()}
+					return &UnauthorizedError{Token: workerToken}
 				}
 
 				if isRetryableForgeError(err) {
@@ -260,7 +261,8 @@ func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
 }
 
 func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask, error) {
-	claimedTask, err := a.claimTaskRequest(ctx)
+	workerToken := a.getWorkerToken()
+	claimedTask, err := a.claimTaskRequest(ctx, workerToken)
 	if claimedTask != nil {
 		return claimedTask, nil
 	}
@@ -287,7 +289,8 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 		case <-ctx.Done():
 			return nil, nil
 		case <-ticker.C:
-			claimedTask, err := a.claimTaskRequest(ctx)
+			workerToken := a.getWorkerToken()
+			claimedTask, err := a.claimTaskRequest(ctx, workerToken)
 			if claimedTask != nil {
 				return claimedTask, nil
 			}
@@ -297,7 +300,7 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 				}
 
 				if isForgeAuthFailedError(err) {
-					return nil, &UnauthorizedError{Token: a.getWorkerToken()}
+					return nil, &UnauthorizedError{Token: workerToken}
 				}
 
 				if isRetryableForgeError(err) {
@@ -310,8 +313,8 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 	}
 }
 
-func (a *Agent) claimTaskRequest(ctx context.Context) (*forgeapi.ClaimedTask, error) {
-	resp, err := a.client.ClaimTask(ctx, a.getWorkerToken(), forgeapi.ClaimTaskRequest{WorkerID: a.workerID})
+func (a *Agent) claimTaskRequest(ctx context.Context, workerToken string) (*forgeapi.ClaimedTask, error) {
+	resp, err := a.client.ClaimTask(ctx, workerToken, forgeapi.ClaimTaskRequest{WorkerID: a.workerID})
 	if err != nil {
 		return nil, fmt.Errorf("claim task: %w", err)
 	}
