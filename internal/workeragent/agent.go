@@ -31,6 +31,11 @@ type cycleResult struct {
 	err  error
 }
 
+type taskProcessResult struct {
+	result task.ServiceResult
+	err    error
+}
+
 const (
 	cycleHeartbeat = "heartbeat"
 	cycleClaimTask = "claim-task"
@@ -114,6 +119,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	startHeartbeat()
 	startClaimTask()
 
+	taskResults := make(chan taskProcessResult, 1)
+
 	for {
 		select {
 		case <-runCtx.Done():
@@ -125,19 +132,11 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 
 			if errors.Is(result.err, ErrUnauthorized) {
-				var authErr *UnauthorizedError
-				if !errors.As(result.err, &authErr) {
-					return fmt.Errorf("invalid authorization error: %w", result.err)
-				}
-
-				// Проверяем, не обновил ли другой цикл токен.
-				if authErr.Token == a.getWorkerToken() {
-					if err := a.registerWithRetry(runCtx); err != nil {
-						if runCtx.Err() != nil {
-							return nil
-						}
-						return err
+				if err := a.handleCycleAuthErr(runCtx, result.err); err != nil {
+					if runCtx.Err() != nil {
+						return nil
 					}
+					return err
 				}
 
 				switch result.name {
@@ -157,26 +156,18 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 
 			if result.task != nil {
-				serviceResult, err := a.taskService.Process(runCtx, toTask(*result.task))
-
-				if err != nil {
-					return fmt.Errorf("unknown service err: %w", err)
-				}
-
-				if serviceResult.Error != nil {
-					if err := a.notifyTaskFail(runCtx, *serviceResult.Error); err != nil {
-						return fmt.Errorf("failed to notify forge about task fail, err: %w", err)
-					}
-				} else {
-					if err := a.notifyTaskComplete(runCtx, serviceResult); err != nil {
-						return fmt.Errorf("failed to notify forge about task complete, err: %w", err)
-					}
-				}
-
-				// После завершения обработки перезапустим claim.
-				startClaimTask()
+				go func() {
+					serviceResult, err := a.taskService.Process(runCtx, toTask(*result.task))
+					taskResults <- taskProcessResult{result: serviceResult, err: err}
+				}()
 			}
 
+		case processed := <-taskResults:
+			if err := a.handleTaskResult(runCtx, processed); err != nil {
+				return err
+			}
+
+			startClaimTask()
 		}
 	}
 
@@ -241,7 +232,7 @@ func (a *Agent) startHeartbeatCycle(ctx context.Context) error {
 				}
 
 				if isForgeAuthFailedError(err) {
-					return &UnauthorizedError{Token: a.workerToken}
+					return &UnauthorizedError{Token: a.getWorkerToken()}
 				}
 
 				if isRetryableForgeError(err) {
@@ -272,7 +263,7 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 		}
 
 		if isForgeAuthFailedError(err) {
-			return nil, &UnauthorizedError{Token: a.workerToken}
+			return nil, &UnauthorizedError{Token: a.getWorkerToken()}
 		}
 
 		if !isRetryableForgeError(err) {
@@ -298,7 +289,7 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 				}
 
 				if isForgeAuthFailedError(err) {
-					return nil, &UnauthorizedError{Token: a.workerToken}
+					return nil, &UnauthorizedError{Token: a.getWorkerToken()}
 				}
 
 				if isRetryableForgeError(err) {
@@ -371,6 +362,43 @@ func (a *Agent) notifyTaskComplete(ctx context.Context, taskResult task.ServiceR
 
 	if err := a.client.CompleteTask(ctx, a.getWorkerToken(), a.taskID, req); err != nil {
 		return fmt.Errorf("notify about task complete: %w", err)
+	}
+
+	return nil
+}
+
+func (a *Agent) handleCycleAuthErr(ctx context.Context, resultErr error) error {
+	var authErr *UnauthorizedError
+	if !errors.As(resultErr, &authErr) {
+		return fmt.Errorf("invalid authorization error: %w", resultErr)
+	}
+
+	// Проверяем, не обновил ли другой цикл токен.
+	if authErr.Token == a.getWorkerToken() {
+		if err := a.registerWithRetry(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (a *Agent) handleTaskResult(ctx context.Context, processed taskProcessResult) error {
+	if processed.err != nil {
+		return fmt.Errorf("process task: %w", processed.err)
+	}
+
+	if processed.result.Error != nil {
+		if err := a.notifyTaskFail(ctx, *processed.result.Error); err != nil {
+			return err
+		}
+	} else {
+		if err := a.notifyTaskComplete(ctx, processed.result); err != nil {
+			return err
+		}
 	}
 
 	return nil
