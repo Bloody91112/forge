@@ -157,8 +157,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 			if result.task != nil {
 				go func() {
-					serviceResult, err := a.taskService.Process(runCtx, toTask(*result.task))
-					taskResults <- taskProcessResult{result: serviceResult, err: err}
+					taskResults <- a.processTask(ctx, result.task)
 				}()
 			}
 
@@ -171,6 +170,15 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
+}
+
+func (a *Agent) processTask(ctx context.Context, claimedTask *forgeapi.ClaimedTask) taskProcessResult {
+	a.taskID = claimedTask.ID
+	a.leaseToken = claimedTask.LeaseToken
+	a.leaseExpiresAt = claimedTask.LeaseExpiresAt
+
+	serviceResult, err := a.taskService.Process(ctx, toTask(*claimedTask))
+	return taskProcessResult{result: serviceResult, err: err}
 }
 
 func (a *Agent) registerAtForge(ctx context.Context) error {
