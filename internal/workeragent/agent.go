@@ -273,7 +273,7 @@ func (a *Agent) startClaimTaskCycle(ctx context.Context) (*forgeapi.ClaimedTask,
 		}
 
 		if isForgeAuthFailedError(err) {
-			return nil, &UnauthorizedError{Token: a.getWorkerToken()}
+			return nil, &UnauthorizedError{Token: workerToken}
 		}
 
 		if !isRetryableForgeError(err) {
