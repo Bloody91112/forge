@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"forge/internal/workeragent/forgeapi"
 	"forge/internal/workeragent/task"
+	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -343,12 +344,12 @@ func (a *Agent) renewTaskLease(ctx context.Context) error {
 	return nil
 }
 
-func (a *Agent) notifyTaskFail(ctx context.Context, taskError task.ServiceError) error {
+func (a *Agent) notifyTaskFail(ctx context.Context, code, message string, retryable bool) error {
 	req := forgeapi.FailTaskRequest{
 		WorkerID:   a.workerID,
 		LeaseToken: a.leaseToken,
-		Error:      forgeapi.TaskError{Code: taskError.Code, Message: taskError.Message},
-		Retryable:  taskError.Retryable,
+		Error:      forgeapi.TaskError{Code: code, Message: message},
+		Retryable:  retryable,
 	}
 
 	err := a.client.FailTask(ctx, a.getWorkerToken(), a.taskID, req)
@@ -404,11 +405,12 @@ func (a *Agent) handleCycleAuthErr(ctx context.Context, resultErr error) error {
 
 func (a *Agent) handleTaskResult(ctx context.Context, processed taskProcessResult) error {
 	if processed.err != nil {
+		a.notifyForgeAboutInternalError(ctx)
 		return fmt.Errorf("process task: %w", processed.err)
 	}
 
-	if processed.result.Error != nil {
-		if err := a.notifyTaskFail(ctx, *processed.result.Error); err != nil {
+	if resultErr := processed.result.Error; resultErr != nil {
+		if err := a.notifyTaskFail(ctx, resultErr.Code, resultErr.Message, resultErr.Retryable); err != nil {
 			return err
 		}
 	} else {
@@ -418,6 +420,12 @@ func (a *Agent) handleTaskResult(ctx context.Context, processed taskProcessResul
 	}
 
 	return nil
+}
+
+func (a *Agent) notifyForgeAboutInternalError(ctx context.Context) {
+	if notifyErr := a.notifyTaskFail(ctx, "internal_err", "Failed to handle task", false); notifyErr != nil {
+		log.Printf("failed to notify forge about task internal error: %v", notifyErr)
+	}
 }
 
 func toTask(claimed forgeapi.ClaimedTask) task.Task {
