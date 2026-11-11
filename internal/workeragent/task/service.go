@@ -30,12 +30,12 @@ func NewService(handlers map[string]ForgeTaskHandler) *Service {
 }
 
 func (s *Service) Process(ctx context.Context, task Task) (ServiceResult, error) {
-	if err := ctx.Err(); err != nil {
-		return ServiceResult{}, err
-	}
-
 	if err := s.validateTask(task); err != nil {
 		return ServiceResult{Error: err}, nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return ServiceResult{}, err
 	}
 
 	handler, err := s.getTaskHandlerByType(task.Type)
@@ -43,18 +43,11 @@ func (s *Service) Process(ctx context.Context, task Task) (ServiceResult, error)
 		return ServiceResult{}, err
 	}
 
-	// блокируется
 	result, handlerErr := handler.HandleTask(ctx, task)
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			return ServiceResult{
-				Error: &ServiceError{
-					Code:      ErrorCodeTaskTimeout,
-					Message:   "Task execution timed out",
-					Retryable: true,
-				},
-			}, nil
+			return ServiceResult{Error: &ServiceError{Code: ErrorCodeTaskTimeout, Message: "Task execution timed out", Retryable: true}}, nil
 		}
 
 		return ServiceResult{}, ctxErr

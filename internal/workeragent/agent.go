@@ -163,8 +163,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 
 		case processed := <-taskResults:
+			if runCtx.Err() != nil {
+				return nil
+			}
+
 			if err := a.handleTaskResult(runCtx, processed); err != nil {
-				if errors.Is(err, context.Canceled) {
+				if runCtx.Err() != nil {
 					return nil
 				}
 
@@ -408,25 +412,14 @@ func (a *Agent) handleCycleAuthErr(ctx context.Context, resultErr error) error {
 }
 
 func (a *Agent) handleTaskResult(ctx context.Context, processed taskProcessResult) error {
-	if ctx.Err() != nil {
-		return nil
-	}
-
 	if processed.err != nil {
-		if !errors.Is(processed.err, context.Canceled) {
-			a.notifyForgeAboutInternalError(ctx, processed.err)
-		}
-
-		if ctx.Err() != nil {
-			return nil
-		}
+		a.notifyForgeAboutInternalError(ctx, processed.err)
 
 		return fmt.Errorf("process task: %w", processed.err)
 	}
 
-	if processed.result.Error != nil {
-		if err := a.notifyTaskFail(ctx, processed.result.Error.Code,
-			processed.result.Error.Message, processed.result.Error.Retryable); err != nil {
+	if resultErr := processed.result.Error; resultErr != nil {
+		if err := a.notifyTaskFail(ctx, resultErr.Code, resultErr.Message, resultErr.Retryable); err != nil {
 			return err
 		}
 	} else {
