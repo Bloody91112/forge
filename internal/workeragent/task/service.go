@@ -9,6 +9,12 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	ErrorCodeTaskTimeout        = "task_timeout"
+	ErrorCodeTaskInvalidParam   = "task_invalid_param"
+	ErrorCodeTaskInvalidPayload = "task_invalid_payload"
+)
+
 var ErrTaskValidationFailed = errors.New("task validation failed")
 
 type ForgeTaskHandler interface {
@@ -24,29 +30,76 @@ func NewService(handlers map[string]ForgeTaskHandler) *Service {
 }
 
 func (s *Service) Process(ctx context.Context, task Task) (ServiceResult, error) {
-	if err := s.validateTask(task); err != nil {
+	if err := ctx.Err(); err != nil {
 		return ServiceResult{}, err
 	}
 
-	handler, getHandlerErr := s.getTaskHandlerByType(task.Type)
-	if getHandlerErr != nil {
-		return ServiceResult{}, getHandlerErr
+	if err := s.validateTask(task); err != nil {
+		return ServiceResult{Error: err}, nil
 	}
 
-	return handler.HandleTask(ctx, task)
+	handler, err := s.getTaskHandlerByType(task.Type)
+	if err != nil {
+		return ServiceResult{}, err
+	}
+
+	// блокируется
+	result, handlerErr := handler.HandleTask(ctx, task)
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			return ServiceResult{
+				Error: &ServiceError{
+					Code:      ErrorCodeTaskTimeout,
+					Message:   "Task execution timed out",
+					Retryable: true,
+				},
+			}, nil
+		}
+
+		return ServiceResult{}, ctxErr
+	}
+
+	if handlerErr != nil {
+		return ServiceResult{}, fmt.Errorf("handle task: %w", handlerErr)
+	}
+
+	return result, nil
 }
 
-func (s *Service) validateTask(task Task) error {
+func (s *Service) validateTask(task Task) *ServiceError {
 	if task.ID == uuid.Nil {
-		return fmt.Errorf("task nil uuid provided: %w", ErrTaskValidationFailed)
+		return &ServiceError{
+			Code:      ErrorCodeTaskInvalidParam,
+			Message:   "Task nil id provided",
+			Retryable: false,
+		}
 	}
 
 	if task.Timeout <= 0 {
-		return fmt.Errorf("task timeout is zero or less: %w", ErrTaskValidationFailed)
+		return &ServiceError{
+			Code:      ErrorCodeTaskInvalidParam,
+			Message:   "Task timeout zero or less",
+			Retryable: false,
+		}
 	}
 
 	if task.AttemptNumber <= 0 {
-		return fmt.Errorf("attempt number is zero or less: %w", ErrTaskValidationFailed)
+		return &ServiceError{
+			Code:      ErrorCodeTaskInvalidParam,
+			Message:   "Task attempt number zero or less",
+			Retryable: false,
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) ValidateCapabilities(capabilities []string) error {
+	for _, capability := range capabilities {
+		if _, ok := s.handlers[capability]; !ok {
+			return fmt.Errorf("capability %q has no registered task handler", capability)
+		}
 	}
 
 	return nil

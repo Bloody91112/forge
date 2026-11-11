@@ -3,7 +3,6 @@ package task
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 )
@@ -11,39 +10,47 @@ import (
 type NumbersSummer struct{}
 
 type ExpectedPayload struct {
-	Number1 int `json:"number_1"`
-	Number2 int `json:"number_2"`
+	Number1 *int `json:"number_1"`
+	Number2 *int `json:"number_2"`
+}
+
+type numbersSumResult struct {
+	Sum int `json:"sum"`
 }
 
 func (ns *NumbersSummer) HandleTask(ctx context.Context, task Task) (ServiceResult, error) {
 	var payload ExpectedPayload
 
 	if err := json.Unmarshal(task.Payload, &payload); err != nil {
-		return ServiceResult{}, fmt.Errorf("parse task payload: %w", err)
+		return invalidPayloadResult(fmt.Sprintf("invalid payload: %v", err)), nil
 	}
 
-	sumResultCh := make(chan int)
+	if payload.Number1 == nil || payload.Number2 == nil {
+		return invalidPayloadResult("number_1 and number_2 are required"), nil
+	}
 
-	go func() {
-		time.Sleep(5 * time.Second)
-		sumResultCh <- payload.Number1 + payload.Number2
-	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
-		err := ctx.Err()
-		var serviceErr *ServiceError
-		if errors.Is(err, context.Canceled) {
-			serviceErr = &ServiceError{Code: "ctx_canceled", Message: "Context canceled", Retryable: false}
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			serviceErr = &ServiceError{Code: "ctx_timeout", Message: "Context timeout", Retryable: false}
-		} else {
-			serviceErr = &ServiceError{Code: "unknown_context_err", Message: "Unknown context error", Retryable: false}
-		}
+		return ServiceResult{}, ctx.Err()
 
-		return ServiceResult{Error: serviceErr, Result: nil}, nil
-	case sumResult := <-sumResultCh:
-		return ServiceResult{Error: nil, Result: sumResult}, nil
+	case <-timer.C:
+		return ServiceResult{
+			Result: numbersSumResult{
+				Sum: *payload.Number1 + *payload.Number2,
+			},
+		}, nil
 	}
+}
 
+func invalidPayloadResult(message string) ServiceResult {
+	return ServiceResult{
+		Error: &ServiceError{
+			Code:      ErrorCodeTaskInvalidPayload,
+			Message:   message,
+			Retryable: false,
+		},
+	}
 }

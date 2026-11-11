@@ -44,10 +44,14 @@ func run() error {
 	}
 
 	taskHandlers := map[string]task.ForgeTaskHandler{
-		"sum-number": &task.NumbersSummer{},
+		"sum-numbers": &task.NumbersSummer{},
 	}
 
 	taskService := task.NewService(taskHandlers)
+
+	if err := taskService.ValidateCapabilities(conf.Capabilities); err != nil {
+		return err
+	}
 
 	worker := workeragent.NewAgent(forgeClient, taskService, conf.BootstrapToken, conf.Capabilities)
 

@@ -164,6 +164,10 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		case processed := <-taskResults:
 			if err := a.handleTaskResult(runCtx, processed); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+
 				return err
 			}
 
@@ -404,13 +408,25 @@ func (a *Agent) handleCycleAuthErr(ctx context.Context, resultErr error) error {
 }
 
 func (a *Agent) handleTaskResult(ctx context.Context, processed taskProcessResult) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	if processed.err != nil {
-		a.notifyForgeAboutInternalError(ctx)
+		if !errors.Is(processed.err, context.Canceled) {
+			a.notifyForgeAboutInternalError(ctx, processed.err)
+		}
+
+		if ctx.Err() != nil {
+			return nil
+		}
+
 		return fmt.Errorf("process task: %w", processed.err)
 	}
 
-	if resultErr := processed.result.Error; resultErr != nil {
-		if err := a.notifyTaskFail(ctx, resultErr.Code, resultErr.Message, resultErr.Retryable); err != nil {
+	if processed.result.Error != nil {
+		if err := a.notifyTaskFail(ctx, processed.result.Error.Code,
+			processed.result.Error.Message, processed.result.Error.Retryable); err != nil {
 			return err
 		}
 	} else {
@@ -422,9 +438,11 @@ func (a *Agent) handleTaskResult(ctx context.Context, processed taskProcessResul
 	return nil
 }
 
-func (a *Agent) notifyForgeAboutInternalError(ctx context.Context) {
-	if notifyErr := a.notifyTaskFail(ctx, "internal_err", "Failed to handle task", false); notifyErr != nil {
-		log.Printf("failed to notify forge about task internal error: %v", notifyErr)
+func (a *Agent) notifyForgeAboutInternalError(ctx context.Context, cause error) {
+	retryable := !errors.Is(cause, task.ErrTaskValidationFailed)
+
+	if err := a.notifyTaskFail(ctx, "internal_err", "Worker failed to process task", retryable); err != nil && ctx.Err() == nil {
+		log.Printf("failed to notify forge about task internal error: %v", err)
 	}
 }
 
