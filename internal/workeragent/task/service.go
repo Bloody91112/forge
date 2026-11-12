@@ -35,6 +35,9 @@ func (s *Service) Process(ctx context.Context, task Task) (ServiceResult, error)
 	}
 
 	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return taskTimeoutResult(), nil
+		}
 		return ServiceResult{}, err
 	}
 
@@ -47,7 +50,7 @@ func (s *Service) Process(ctx context.Context, task Task) (ServiceResult, error)
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			return ServiceResult{Error: &ServiceError{Code: ErrorCodeTaskTimeout, Message: "Task execution timed out", Retryable: true}}, nil
+			return taskTimeoutResult(), nil
 		}
 
 		return ServiceResult{}, ctxErr
@@ -111,4 +114,12 @@ func (s *Service) getTaskHandlerByType(taskType string) (ForgeTaskHandler, error
 	}
 
 	return handler, nil
+}
+
+func taskTimeoutResult() ServiceResult {
+	return ServiceResult{Error: &ServiceError{
+		Code:      ErrorCodeTaskTimeout,
+		Message:   "Task execution timed out",
+		Retryable: true,
+	}}
 }
