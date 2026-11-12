@@ -71,7 +71,7 @@ func NewAgent(client ForgeClient, taskService TaskService, bootstrapToken string
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
+	if ctx.Err() != nil {
 		return nil
 	}
 

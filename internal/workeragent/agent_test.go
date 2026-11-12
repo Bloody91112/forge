@@ -33,11 +33,9 @@ type fakeForgeClient struct {
 
 func (c *fakeForgeClient) Register(ctx context.Context, token string, input forgeapi.RegisterRequest) (forgeapi.RegisterResponse, error) {
 	attempt := c.registerCalls.Add(1)
-
 	if c.register != nil {
 		return c.register(ctx, token, input)
 	}
-
 	return forgeapi.RegisterResponse{
 		WorkerID:    input.WorkerID,
 		WorkerToken: fmt.Sprintf("worker-token-%d", attempt),
@@ -121,7 +119,6 @@ func newTestAgent(client *fakeForgeClient, processor TaskService) *Agent {
 
 func startAgent(t *testing.T, agent *Agent) (context.CancelFunc, <-chan error) {
 	t.Helper()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- agent.Run(ctx) }()
@@ -130,7 +127,6 @@ func startAgent(t *testing.T, agent *Agent) (context.CancelFunc, <-chan error) {
 
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
-
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if condition() {
@@ -193,16 +189,19 @@ func TestAgentRenewsLeaseWhileTaskRunsAndStopsAfterCompletion(t *testing.T) {
 	agent := newTestAgent(client, processor)
 	cancel, done := startAgent(t, agent)
 
-	waitFor(t, func() bool { return client.completeCalls.Load() == 1 })
+	waitFor(t, func() bool { return client.claimCalls.Load() >= 2 })
+	callsAfterCompletion := client.renewCalls.Load()
+	time.Sleep(20 * time.Millisecond)
+	if got := client.renewCalls.Load(); got != callsAfterCompletion {
+		t.Errorf("renew continued after task processing: calls before=%d after=%d", callsAfterCompletion, got)
+	}
 	stopAgent(t, cancel, done)
 
-	callsAfterStop := client.renewCalls.Load()
-	time.Sleep(20 * time.Millisecond)
-	if got := client.renewCalls.Load(); got != callsAfterStop {
-		t.Errorf("renew continued after task completion: calls before=%d after=%d", callsAfterStop, got)
+	if got := client.completeCalls.Load(); got != 1 {
+		t.Errorf("complete calls = %d, want 1", got)
 	}
-	if callsAfterStop < 2 {
-		t.Errorf("renew calls = %d, want at least 2", callsAfterStop)
+	if callsAfterCompletion < 2 {
+		t.Errorf("renew calls = %d, want at least 2", callsAfterCompletion)
 	}
 }
 
@@ -241,6 +240,40 @@ func TestRenewUnauthorizedRefreshesWorkerToken(t *testing.T) {
 
 	if got := client.registerCalls.Load(); got != 2 {
 		t.Errorf("register calls = %d, want 2", got)
+	}
+}
+
+func TestRenewOtherErrorsAreRetriedWithoutStoppingTask(t *testing.T) {
+	client := &fakeForgeClient{}
+	client.renew = func(context.Context, string, uuid.UUID, forgeapi.RenewTaskRequest) (forgeapi.RenewTaskResponse, error) {
+		return forgeapi.RenewTaskResponse{}, &forgeapi.RemoteError{StatusCode: 400, Code: "temporary_test_error"}
+	}
+	processor := fakeTaskService{process: func(ctx context.Context, _ task.Task) (task.ServiceResult, error) {
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		deadline := time.NewTimer(time.Second)
+		defer deadline.Stop()
+		for client.renewCalls.Load() < 2 {
+			select {
+			case <-ctx.Done():
+				return task.ServiceResult{}, ctx.Err()
+			case <-deadline.C:
+				return task.ServiceResult{}, errors.New("renew errors stopped the task")
+			case <-ticker.C:
+			}
+		}
+		return task.ServiceResult{Result: map[string]any{"ok": true}}, nil
+	}}
+	agent := newTestAgent(client, processor)
+	cancel, done := startAgent(t, agent)
+
+	waitFor(t, func() bool { return client.claimCalls.Load() >= 2 })
+	stopAgent(t, cancel, done)
+	if got := client.renewCalls.Load(); got < 2 {
+		t.Errorf("renew calls = %d, want at least 2", got)
+	}
+	if got := client.completeCalls.Load(); got != 1 {
+		t.Errorf("complete calls = %d, want 1", got)
 	}
 }
 
@@ -292,6 +325,23 @@ func TestAgentReportsTaskProcessingErrorAndContinues(t *testing.T) {
 	if got := client.completeCalls.Load(); got != 0 {
 		t.Errorf("complete calls = %d, want 0", got)
 	}
+}
+
+func TestHeartbeatUnauthorizedRefreshesWorkerToken(t *testing.T) {
+	client := &fakeForgeClient{}
+	client.heartbeat = func(_ context.Context, token string, input forgeapi.HeartbeatRequest) (forgeapi.HeartbeatResponse, error) {
+		if token == "worker-token-1" {
+			return forgeapi.HeartbeatResponse{}, &forgeapi.RemoteError{StatusCode: 401, Code: "unauthorized"}
+		}
+		return forgeapi.HeartbeatResponse{WorkerID: input.WorkerID}, nil
+	}
+	agent := newTestAgent(client, fakeTaskService{})
+	cancel, done := startAgent(t, agent)
+
+	waitFor(t, func() bool {
+		return client.heartbeatCalls.Load() >= 2 && client.registerCalls.Load() == 2
+	})
+	stopAgent(t, cancel, done)
 }
 
 func TestHeartbeatFailureDoesNotStopAgent(t *testing.T) {
@@ -396,89 +446,63 @@ func TestMarshalTaskResultRequiresObject(t *testing.T) {
 	}
 }
 
-func TestAgentKeepsRenewingUntilCompletionIsReported(t *testing.T) {
+func TestAgentStopsRenewingBeforeReportingCompletion(t *testing.T) {
 	client := &fakeForgeClient{}
-
-	client.complete = func(
-		ctx context.Context,
-		_ string,
-		_ uuid.UUID,
-		_ forgeapi.CompleteTaskRequest,
-	) error {
-		ticker := time.NewTicker(time.Millisecond)
-		defer ticker.Stop()
-
-		timer := time.NewTimer(time.Second)
+	client.complete = func(ctx context.Context, _ string, _ uuid.UUID, _ forgeapi.CompleteTaskRequest) error {
+		callsAtCompletion := client.renewCalls.Load()
+		timer := time.NewTimer(25 * time.Millisecond)
 		defer timer.Stop()
-
-		for client.renewCalls.Load() < 2 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-timer.C:
-				return errors.New("renew stopped before completion")
-			case <-ticker.C:
-			}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
 		}
-
+		if got := client.renewCalls.Load(); got != callsAtCompletion {
+			return fmt.Errorf("renew continued during completion: before=%d after=%d", callsAtCompletion, got)
+		}
 		return nil
 	}
 
 	agent := newTestAgent(client, fakeTaskService{})
-
 	if err := agent.registerAtForge(context.Background()); err != nil {
 		t.Fatalf("register worker: %v", err)
 	}
-
 	if err := agent.runTask(context.Background(), newClaimedTask()); err != nil {
 		t.Fatalf("run task: %v", err)
 	}
-
-	if got := client.renewCalls.Load(); got < 2 {
-		t.Errorf("renew calls = %d, want at least 2", got)
+	if got := client.completeCalls.Load(); got != 1 {
+		t.Errorf("complete calls = %d, want 1", got)
 	}
 }
 
 func TestConcurrentUnauthorizedResponsesShareFailedRegistrationAttempts(t *testing.T) {
 	client := &fakeForgeClient{}
-
-	client.register = func(
-		_ context.Context,
-		_ string,
-		input forgeapi.RegisterRequest,
-	) (forgeapi.RegisterResponse, error) {
+	client.register = func(_ context.Context, _ string, input forgeapi.RegisterRequest) (forgeapi.RegisterResponse, error) {
 		if client.registerCalls.Load() == 1 {
 			return forgeapi.RegisterResponse{
 				WorkerID:    input.WorkerID,
 				WorkerToken: "initial-token",
 			}, nil
 		}
-
 		return forgeapi.RegisterResponse{}, errors.New("registration unavailable")
 	}
 
 	agent := newTestAgent(client, fakeTaskService{})
-
 	if err := agent.registerAtForge(context.Background()); err != nil {
 		t.Fatalf("initial registration: %v", err)
 	}
-
 	rejectedToken := agent.getWorkerToken()
 
 	const callers = 8
-
 	var wg sync.WaitGroup
 	errs := make(chan error, callers)
-
 	for i := 0; i < callers; i++ {
 		wg.Add(1)
-
 		go func() {
 			defer wg.Done()
 			errs <- agent.refreshWorkerToken(context.Background(), rejectedToken)
 		}()
 	}
-
 	wg.Wait()
 	close(errs)
 
@@ -486,6 +510,83 @@ func TestConcurrentUnauthorizedResponsesShareFailedRegistrationAttempts(t *testi
 		if err == nil {
 			t.Error("expected registration error")
 		}
+	}
+	if got := client.registerCalls.Load(); got != 4 {
+		t.Errorf("register calls = %d, want 4 (1 initial + 3 retries)", got)
+	}
+}
+
+func TestAgentStopsRenewalAfterTimeoutEvenIfHandlerIgnoresContext(t *testing.T) {
+	client := &fakeForgeClient{}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	processor := fakeTaskService{process: func(ctx context.Context, _ task.Task) (task.ServiceResult, error) {
+		close(started)
+		<-release // Deliberately ignores ctx to exercise the documented limitation.
+		return task.ServiceResult{Error: &task.ServiceError{
+			Code:      task.ErrorCodeTaskTimeout,
+			Message:   "Task execution timed out",
+			Retryable: true,
+		}}, nil
+	}}
+	agent := newTestAgent(client, processor)
+	claimedTask := newClaimedTask()
+	claimedTask.TimeoutSeconds = 1
+
+	done := make(chan error, 1)
+	go func() { done <- agent.runTask(context.Background(), claimedTask) }()
+	<-started
+
+	time.Sleep(1100 * time.Millisecond)
+	callsAfterTimeout := client.renewCalls.Load()
+	time.Sleep(20 * time.Millisecond)
+	if got := client.renewCalls.Load(); got != callsAfterTimeout {
+		t.Errorf("renew continued after task timeout: before=%d after=%d", callsAfterTimeout, got)
+	}
+
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runTask() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runTask() did not finish after handler was released")
+	}
+
+	if got := client.failCalls.Load(); got != 1 {
+		t.Errorf("fail calls = %d, want 1", got)
+	}
+	if got := client.completeCalls.Load(); got != 0 {
+		t.Errorf("complete calls = %d, want 0", got)
+	}
+}
+
+func TestAgentStopsWhenWorkerAuthorizationCannotBeRestored(t *testing.T) {
+	client := &fakeForgeClient{}
+	client.claim = func(context.Context, string, forgeapi.ClaimTaskRequest) (*forgeapi.ClaimTaskResponse, error) {
+		return nil, nil
+	}
+	client.heartbeat = func(context.Context, string, forgeapi.HeartbeatRequest) (forgeapi.HeartbeatResponse, error) {
+		return forgeapi.HeartbeatResponse{}, &forgeapi.RemoteError{StatusCode: 401, Code: "unauthorized"}
+	}
+	client.register = func(_ context.Context, _ string, input forgeapi.RegisterRequest) (forgeapi.RegisterResponse, error) {
+		if client.registerCalls.Load() == 1 {
+			return forgeapi.RegisterResponse{WorkerID: input.WorkerID, WorkerToken: "initial-token"}, nil
+		}
+		return forgeapi.RegisterResponse{}, errors.New("registration unavailable")
+	}
+
+	agent := newTestAgent(client, fakeTaskService{})
+	_, done := startAgent(t, agent)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Agent.Run() returned nil after authorization recovery failed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Agent.Run() did not stop after authorization recovery failed")
 	}
 
 	if got := client.registerCalls.Load(); got != 4 {

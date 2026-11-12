@@ -2,7 +2,6 @@ package workeragent
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
@@ -17,27 +16,36 @@ func (a *Agent) runHeartbeatCycle(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+
 		case <-ticker.C:
-			workerToken := a.getWorkerToken()
-			response, err := a.client.Heartbeat(ctx, workerToken, forgeapi.HeartbeatRequest{WorkerID: a.workerID})
+			var response forgeapi.HeartbeatResponse
+			err := a.withWorkerAuthorizationRetry(ctx, func(workerToken string) error {
+				var requestErr error
+				response, requestErr = a.client.Heartbeat(
+					ctx,
+					workerToken,
+					forgeapi.HeartbeatRequest{WorkerID: a.workerID},
+				)
+				return requestErr
+			})
+
 			if ctx.Err() != nil {
 				return nil
 			}
-
-			if isForgeAuthFailedError(err) {
-				if refreshErr := a.refreshWorkerToken(ctx, workerToken); refreshErr != nil {
-					return fmt.Errorf("refresh worker authorization after heartbeat: %w", refreshErr)
-				}
-				continue
+			if isWorkerAuthorizationFailedError(err) {
+				return err
 			}
-
 			if err != nil {
 				log.Printf("worker heartbeat failed: %v", err)
 				continue
 			}
 
 			if response.WorkerID != a.workerID {
-				log.Printf("worker heartbeat returned unexpected worker id: got %s, want %s", response.WorkerID, a.workerID)
+				log.Printf(
+					"worker heartbeat returned unexpected worker id: got %s, want %s",
+					response.WorkerID,
+					a.workerID,
+				)
 			}
 		}
 	}

@@ -8,6 +8,8 @@ import (
 	"forge/internal/workeragent/forgeapi"
 )
 
+var errWorkerAuthorizationFailed = errors.New("worker authorization failed")
+
 func isRetryableForgeError(err error) bool {
 	if err == nil {
 		return false
@@ -25,4 +27,15 @@ func isRetryableForgeError(err error) bool {
 func isForgeAuthFailedError(err error) bool {
 	var remoteErr *forgeapi.RemoteError
 	return errors.As(err, &remoteErr) && remoteErr.StatusCode == http.StatusUnauthorized
+}
+
+func isWorkerAuthorizationFailedError(err error) bool {
+	return errors.Is(err, errWorkerAuthorizationFailed)
+}
+
+func isTaskLeaseLostError(err error) bool {
+	var remoteErr *forgeapi.RemoteError
+	return errors.As(err, &remoteErr) &&
+		remoteErr.StatusCode == http.StatusConflict &&
+		remoteErr.Code == "lease_lost"
 }
