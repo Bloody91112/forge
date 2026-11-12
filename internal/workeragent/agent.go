@@ -50,6 +50,7 @@ type Agent struct {
 	tokenMu        sync.RWMutex
 	workerToken    string
 	registrationMu sync.Mutex
+	registration   registrationState
 
 	intervals agentIntervals
 }

@@ -59,29 +59,66 @@ func (a *Agent) waitForTask(ctx context.Context) (*forgeapi.ClaimedTask, error) 
 }
 
 func (a *Agent) runTask(ctx context.Context, claimedTask forgeapi.ClaimedTask) error {
-	taskTimeout := time.Duration(claimedTask.TimeoutSeconds) * time.Second
-	taskCtx, cancelTask := context.WithTimeout(ctx, taskTimeout)
+	leaseCtx, cancelLease := context.WithCancelCause(ctx)
+	defer cancelLease(context.Canceled)
+
+	taskCtx, cancelTask := context.WithTimeout(
+		leaseCtx,
+		time.Duration(claimedTask.TimeoutSeconds)*time.Second,
+	)
+	defer cancelTask()
+
+	processDone := make(chan struct{})
 	renewDone := make(chan error, 1)
 
 	go func() {
-		renewDone <- a.runRenewCycle(taskCtx, cancelTask, claimedTask)
+		renewDone <- a.runRenewCycle(
+			leaseCtx,
+			taskCtx,
+			processDone,
+			cancelLease,
+			claimedTask,
+		)
 	}()
 
 	processed := a.processTask(taskCtx, claimedTask)
+
+	close(processDone)
 	cancelTask()
 
+	if cause := context.Cause(leaseCtx); cause != nil {
+		<-renewDone
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if errors.Is(cause, errTaskLeaseLost) {
+			return nil
+		}
+
+		return fmt.Errorf("renew task lease: %w", cause)
+	}
+
+	resultErr := a.handleTaskResult(leaseCtx, processed)
+
+	cancelLease(context.Canceled)
+
 	renewErr := <-renewDone
+
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if errors.Is(renewErr, errTaskLeaseLost) {
+
+	if errors.Is(context.Cause(leaseCtx), errTaskLeaseLost) {
 		return nil
 	}
-	if renewErr != nil {
+
+	if renewErr != nil && !errors.Is(renewErr, errTaskLeaseLost) {
 		return fmt.Errorf("renew task lease: %w", renewErr)
 	}
 
-	return a.handleTaskResult(ctx, processed)
+	return resultErr
 }
 
 func (a *Agent) processTask(ctx context.Context, claimedTask forgeapi.ClaimedTask) taskProcessResult {
@@ -94,22 +131,67 @@ func (a *Agent) processTask(ctx context.Context, claimedTask forgeapi.ClaimedTas
 	}
 }
 
-func (a *Agent) runRenewCycle(ctx context.Context, cancelTask context.CancelFunc, claimedTask forgeapi.ClaimedTask) error {
+func (a *Agent) runRenewCycle(
+	ctx context.Context,
+	taskCtx context.Context,
+	processDone <-chan struct{},
+	cancelLease context.CancelCauseFunc,
+	claimedTask forgeapi.ClaimedTask,
+) error {
 	ticker := time.NewTicker(a.intervals.renew)
 	defer ticker.Stop()
+
+	taskDone := taskCtx.Done()
+	processFinished := processDone
+
+	stopOnTaskDeadline := func() bool {
+		if taskDone == nil {
+			return false
+		}
+
+		select {
+		case <-taskDone:
+			select {
+			case <-processDone:
+				taskDone = nil
+				processFinished = nil
+				return false
+			default:
+				return true
+			}
+		default:
+			return false
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+
+		case <-processFinished:
+			processFinished = nil
+			taskDone = nil
+
+		case <-taskDone:
+			if stopOnTaskDeadline() {
+				return nil
+			}
+
 		case <-ticker.C:
+			if stopOnTaskDeadline() {
+				return nil
+			}
+
 			workerToken := a.getWorkerToken()
+
 			request := forgeapi.RenewTaskRequest{
 				WorkerID:   a.workerID,
 				LeaseToken: claimedTask.LeaseToken,
 			}
 
 			_, err := a.client.RenewTaskLease(ctx, workerToken, claimedTask.ID, request)
+
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -119,22 +201,30 @@ func (a *Agent) runRenewCycle(ctx context.Context, cancelTask context.CancelFunc
 					if ctx.Err() != nil {
 						return nil
 					}
-					cancelTask()
-					return fmt.Errorf("refresh worker authorization after lease renewal: %w", refreshErr)
+
+					refreshErr = fmt.Errorf(
+						"refresh worker authorization after lease renewal: %w",
+						refreshErr,
+					)
+
+					cancelLease(refreshErr)
+					return refreshErr
 				}
+
 				continue
 			}
 
 			if isTaskLeaseLostError(err) {
-				cancelTask()
+				cancelLease(errTaskLeaseLost)
 				return errTaskLeaseLost
 			}
 
 			if err != nil {
 				if !isRetryableForgeError(err) {
-					cancelTask()
+					cancelLease(err)
 					return err
 				}
+
 				log.Printf("renew task lease failed; retrying: %v", err)
 			}
 		}

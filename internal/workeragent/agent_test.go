@@ -28,10 +28,16 @@ type fakeForgeClient struct {
 	renew     func(context.Context, string, uuid.UUID, forgeapi.RenewTaskRequest) (forgeapi.RenewTaskResponse, error)
 	complete  func(context.Context, string, uuid.UUID, forgeapi.CompleteTaskRequest) error
 	fail      func(context.Context, string, uuid.UUID, forgeapi.FailTaskRequest) error
+	register  func(context.Context, string, forgeapi.RegisterRequest) (forgeapi.RegisterResponse, error)
 }
 
-func (c *fakeForgeClient) Register(_ context.Context, _ string, input forgeapi.RegisterRequest) (forgeapi.RegisterResponse, error) {
+func (c *fakeForgeClient) Register(ctx context.Context, token string, input forgeapi.RegisterRequest) (forgeapi.RegisterResponse, error) {
 	attempt := c.registerCalls.Add(1)
+
+	if c.register != nil {
+		return c.register(ctx, token, input)
+	}
+
 	return forgeapi.RegisterResponse{
 		WorkerID:    input.WorkerID,
 		WorkerToken: fmt.Sprintf("worker-token-%d", attempt),
@@ -387,5 +393,102 @@ func TestMarshalTaskResultRequiresObject(t *testing.T) {
 	}
 	if _, err := marshalTaskResult(map[string]any{"data": make([]byte, maxTaskResultSize)}); err == nil {
 		t.Fatal("result larger than 1 MiB should be rejected")
+	}
+}
+
+func TestAgentKeepsRenewingUntilCompletionIsReported(t *testing.T) {
+	client := &fakeForgeClient{}
+
+	client.complete = func(
+		ctx context.Context,
+		_ string,
+		_ uuid.UUID,
+		_ forgeapi.CompleteTaskRequest,
+	) error {
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+
+		for client.renewCalls.Load() < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return errors.New("renew stopped before completion")
+			case <-ticker.C:
+			}
+		}
+
+		return nil
+	}
+
+	agent := newTestAgent(client, fakeTaskService{})
+
+	if err := agent.registerAtForge(context.Background()); err != nil {
+		t.Fatalf("register worker: %v", err)
+	}
+
+	if err := agent.runTask(context.Background(), newClaimedTask()); err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+
+	if got := client.renewCalls.Load(); got < 2 {
+		t.Errorf("renew calls = %d, want at least 2", got)
+	}
+}
+
+func TestConcurrentUnauthorizedResponsesShareFailedRegistrationAttempts(t *testing.T) {
+	client := &fakeForgeClient{}
+
+	client.register = func(
+		_ context.Context,
+		_ string,
+		input forgeapi.RegisterRequest,
+	) (forgeapi.RegisterResponse, error) {
+		if client.registerCalls.Load() == 1 {
+			return forgeapi.RegisterResponse{
+				WorkerID:    input.WorkerID,
+				WorkerToken: "initial-token",
+			}, nil
+		}
+
+		return forgeapi.RegisterResponse{}, errors.New("registration unavailable")
+	}
+
+	agent := newTestAgent(client, fakeTaskService{})
+
+	if err := agent.registerAtForge(context.Background()); err != nil {
+		t.Fatalf("initial registration: %v", err)
+	}
+
+	rejectedToken := agent.getWorkerToken()
+
+	const callers = 8
+
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+			errs <- agent.refreshWorkerToken(context.Background(), rejectedToken)
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err == nil {
+			t.Error("expected registration error")
+		}
+	}
+
+	if got := client.registerCalls.Load(); got != 4 {
+		t.Errorf("register calls = %d, want 4 (1 initial + 3 retries)", got)
 	}
 }

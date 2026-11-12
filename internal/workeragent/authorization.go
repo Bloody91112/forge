@@ -8,6 +8,13 @@ import (
 	"forge/internal/workeragent/forgeapi"
 )
 
+type registrationState struct {
+	rejectedToken string
+	attempts      int
+	lastErr       error
+	exhaustedErr  error
+}
+
 func (a *Agent) registerAtForge(ctx context.Context) error {
 	request := forgeapi.RegisterRequest{
 		WorkerID:        a.workerID,
@@ -39,20 +46,41 @@ func (a *Agent) refreshWorkerToken(ctx context.Context, rejectedToken string) er
 		return nil
 	}
 
-	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	if a.registration.rejectedToken != rejectedToken {
+		a.registration = registrationState{
+			rejectedToken: rejectedToken,
+		}
+	}
+
+	if a.registration.exhaustedErr != nil {
+		return a.registration.exhaustedErr
+	}
+
+	for a.registration.attempts < 3 {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
+		a.registration.attempts++
+
 		if err := a.registerAtForge(ctx); err == nil {
+			a.registration = registrationState{}
 			return nil
 		} else {
-			lastErr = err
+			a.registration.lastErr = err
+
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 		}
 	}
 
-	return fmt.Errorf("worker re-registration failed after 3 attempts: %w", lastErr)
+	a.registration.exhaustedErr = fmt.Errorf(
+		"worker re-registration failed after 3 attempts: %w",
+		a.registration.lastErr,
+	)
+
+	return a.registration.exhaustedErr
 }
 
 func (a *Agent) withWorkerAuthorizationRetry(ctx context.Context, call func(workerToken string) error) error {
