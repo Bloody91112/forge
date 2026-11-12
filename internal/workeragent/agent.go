@@ -22,6 +22,7 @@ const RenewTaskLeasePeriodSeconds = 10
 
 var ErrWorkerIDConflict = errors.New("worker id conflict")
 var ErrUnauthorized = errors.New("worker unauthorized")
+var errTaskLeaseLost = errors.New("task lease lost")
 
 type UnauthorizedError struct {
 	Token string
@@ -30,12 +31,14 @@ type UnauthorizedError struct {
 type cycleResult struct {
 	name string
 	task *forgeapi.ClaimedTask
+	ctx  context.Context
 	err  error
 }
 
 type taskProcessResult struct {
-	result task.ServiceResult
-	err    error
+	claimedTask *forgeapi.ClaimedTask
+	result      task.ServiceResult
+	err         error
 }
 
 const (
@@ -76,11 +79,6 @@ type Agent struct {
 	tokenMu               sync.RWMutex
 	workerToken           string
 	registrationExpiresAt time.Time
-
-	// task
-	taskID         uuid.UUID
-	leaseToken     string
-	leaseExpiresAt time.Time
 }
 
 func NewAgent(client ForgeClient, taskService TaskService, bootstrapToken string, capabilities []string) *Agent {
@@ -104,7 +102,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	}
 
-	cycleResults := make(chan cycleResult, 2)
+	var currentTask *forgeapi.ClaimedTask
+	var cancelCurrentTask context.CancelFunc
+	var currentTaskLeaseLost bool
+
+	cycleResults := make(chan cycleResult, 3)
 
 	startHeartbeat := func() {
 		go func() {
@@ -119,9 +121,18 @@ func (a *Agent) Run(ctx context.Context) error {
 		}()
 	}
 
-	startRenewTaskLease := func() {
+	startRenewTaskLease := func(taskCtx context.Context, claimedTask *forgeapi.ClaimedTask) {
+		if taskCtx.Err() != nil {
+			return
+		}
+
 		go func() {
-			cycleResults <- cycleResult{name: cycleRenewTaskLease, err: a.startRenewTaskLeaseCycle(runCtx)}
+			cycleResults <- cycleResult{
+				name: cycleRenewTaskLease,
+				task: claimedTask,
+				ctx:  taskCtx,
+				err:  a.startRenewTaskLeaseCycle(taskCtx, claimedTask),
+			}
 		}()
 	}
 
@@ -140,6 +151,10 @@ func (a *Agent) Run(ctx context.Context) error {
 				return nil
 			}
 
+			if result.name == cycleRenewTaskLease && result.ctx.Err() != nil {
+				continue
+			}
+
 			if errors.Is(result.err, ErrUnauthorized) {
 				if err := a.handleCycleAuthErr(runCtx, result.err); err != nil {
 					if runCtx.Err() != nil {
@@ -154,11 +169,19 @@ func (a *Agent) Run(ctx context.Context) error {
 				case cycleClaimTask:
 					startClaimTask()
 				case cycleRenewTaskLease:
-					if a.hasTask() {
-						startRenewTaskLease()
-					}
+					startRenewTaskLease(result.ctx, result.task)
+
 				default:
 					return fmt.Errorf("unknown cycle: %s", result.name)
+				}
+
+				continue
+			}
+
+			if errors.Is(result.err, errTaskLeaseLost) {
+				if currentTask != nil && result.task != nil && currentTask.ID == result.task.ID && cancelCurrentTask != nil {
+					currentTaskLeaseLost = true
+					cancelCurrentTask()
 				}
 
 				continue
@@ -168,16 +191,38 @@ func (a *Agent) Run(ctx context.Context) error {
 				return fmt.Errorf("%s cycle: %w", result.name, result.err)
 			}
 
+			if result.name == cycleRenewTaskLease {
+				continue
+			}
+
 			if result.task != nil {
-				go func() {
-					startRenewTaskLease()
-					taskResults <- a.processTask(runCtx, result.task)
-				}()
+				currentTask = result.task
+				taskCtx, cancelTask := context.WithCancel(runCtx)
+
+				cancelCurrentTask = cancelTask
+				currentTaskLeaseLost = false
+
+				startRenewTaskLease(taskCtx, currentTask)
+
+				go func(taskCtx context.Context, claimedTask *forgeapi.ClaimedTask, cancelTask context.CancelFunc) {
+					processed := a.processTask(taskCtx, claimedTask)
+					cancelTask()
+					taskResults <- processed
+				}(taskCtx, currentTask, cancelTask)
 			}
 
 		case processed := <-taskResults:
 			if runCtx.Err() != nil {
 				return nil
+			}
+
+			if currentTaskLeaseLost {
+				currentTask = nil
+				cancelCurrentTask = nil
+				currentTaskLeaseLost = false
+
+				startClaimTask()
+				continue
 			}
 
 			if err := a.handleTaskResult(runCtx, processed); err != nil {
@@ -188,7 +233,8 @@ func (a *Agent) Run(ctx context.Context) error {
 				return err
 			}
 
-			a.unsetTaskData()
+			currentTask = nil
+			cancelCurrentTask = nil
 			startClaimTask()
 		}
 	}
@@ -196,17 +242,13 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) processTask(ctx context.Context, claimedTask *forgeapi.ClaimedTask) taskProcessResult {
-	a.taskID = claimedTask.ID
-	a.leaseToken = claimedTask.LeaseToken
-	a.leaseExpiresAt = claimedTask.LeaseExpiresAt
-
 	taskForService := toTask(*claimedTask)
 
 	taskCtx, cancel := context.WithTimeout(ctx, taskForService.Timeout)
 	defer cancel()
 
 	serviceResult, err := a.taskService.Process(taskCtx, taskForService)
-	return taskProcessResult{result: serviceResult, err: err}
+	return taskProcessResult{claimedTask: claimedTask, result: serviceResult, err: err}
 }
 
 func (a *Agent) registerAtForge(ctx context.Context) error {
@@ -354,7 +396,7 @@ func (a *Agent) claimTaskRequest(ctx context.Context, workerToken string) (*forg
 	return nil, nil
 }
 
-func (a *Agent) startRenewTaskLeaseCycle(ctx context.Context) error {
+func (a *Agent) startRenewTaskLeaseCycle(ctx context.Context, claimedTask *forgeapi.ClaimedTask) error {
 	ticker := time.NewTicker(RenewTaskLeasePeriodSeconds * time.Second)
 	defer ticker.Stop()
 
@@ -365,20 +407,20 @@ func (a *Agent) startRenewTaskLeaseCycle(ctx context.Context) error {
 		case <-ticker.C:
 			workerToken := a.getWorkerToken()
 
-			if !a.hasTask() {
-				return nil
-			}
-
-			req := forgeapi.RenewTaskRequest{WorkerID: a.workerID, LeaseToken: a.leaseToken}
-			resp, err := a.client.RenewTaskLease(ctx, workerToken, a.taskID, req)
-
-			if !a.hasTask() {
-				return nil
-			}
+			req := forgeapi.RenewTaskRequest{WorkerID: a.workerID, LeaseToken: claimedTask.LeaseToken}
+			_, err := a.client.RenewTaskLease(ctx, workerToken, claimedTask.ID, req)
 
 			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+
 				if isForgeAuthFailedError(err) {
 					return &UnauthorizedError{Token: workerToken}
+				}
+
+				if isTaskLeaseLostError(err) {
+					return errTaskLeaseLost
 				}
 
 				if !isRetryableForgeError(err) {
@@ -387,22 +429,20 @@ func (a *Agent) startRenewTaskLeaseCycle(ctx context.Context) error {
 
 				continue
 			}
-
-			a.leaseExpiresAt = resp.LeaseExpiresAt
 		}
 	}
 
 }
 
-func (a *Agent) notifyTaskFail(ctx context.Context, code, message string, retryable bool) error {
+func (a *Agent) notifyTaskFail(ctx context.Context, processedTask *forgeapi.ClaimedTask, code, message string, retryable bool) error {
 	req := forgeapi.FailTaskRequest{
 		WorkerID:   a.workerID,
-		LeaseToken: a.leaseToken,
+		LeaseToken: processedTask.LeaseToken,
 		Error:      forgeapi.TaskError{Code: code, Message: message},
 		Retryable:  retryable,
 	}
 
-	err := a.client.FailTask(ctx, a.getWorkerToken(), a.taskID, req)
+	err := a.client.FailTask(ctx, a.getWorkerToken(), processedTask.ID, req)
 
 	if err != nil {
 		return fmt.Errorf("notify about task fail: %w", err)
@@ -411,7 +451,7 @@ func (a *Agent) notifyTaskFail(ctx context.Context, code, message string, retrya
 	return nil
 }
 
-func (a *Agent) notifyTaskComplete(ctx context.Context, taskResult task.ServiceResult) error {
+func (a *Agent) notifyTaskComplete(ctx context.Context, processedTask *forgeapi.ClaimedTask, taskResult task.ServiceResult) error {
 	result, err := json.Marshal(taskResult.Result)
 	if err != nil {
 		return fmt.Errorf("marshal task result: %w", err)
@@ -423,11 +463,11 @@ func (a *Agent) notifyTaskComplete(ctx context.Context, taskResult task.ServiceR
 
 	req := forgeapi.CompleteTaskRequest{
 		WorkerID:   a.workerID,
-		LeaseToken: a.leaseToken,
+		LeaseToken: processedTask.LeaseToken,
 		Result:     json.RawMessage(result),
 	}
 
-	if err := a.client.CompleteTask(ctx, a.getWorkerToken(), a.taskID, req); err != nil {
+	if err := a.client.CompleteTask(ctx, a.getWorkerToken(), processedTask.ID, req); err != nil {
 		return fmt.Errorf("notify about task complete: %w", err)
 	}
 
@@ -455,17 +495,29 @@ func (a *Agent) handleCycleAuthErr(ctx context.Context, resultErr error) error {
 
 func (a *Agent) handleTaskResult(ctx context.Context, processed taskProcessResult) error {
 	if processed.err != nil {
-		a.notifyForgeAboutInternalError(ctx, processed.err)
+		if err := a.notifyForgeAboutInternalError(ctx, processed.claimedTask, processed.err); err != nil {
+			if isTaskLeaseLostError(err) {
+				return nil
+			}
+
+			log.Printf("failed to notify forge about task internal error: %v", err)
+		}
 
 		return fmt.Errorf("process task: %w", processed.err)
 	}
 
 	if resultErr := processed.result.Error; resultErr != nil {
-		if err := a.notifyTaskFail(ctx, resultErr.Code, resultErr.Message, resultErr.Retryable); err != nil {
+		if err := a.notifyTaskFail(ctx, processed.claimedTask, resultErr.Code, resultErr.Message, resultErr.Retryable); err != nil {
+			if isTaskLeaseLostError(err) {
+				return nil
+			}
 			return err
 		}
 	} else {
-		if err := a.notifyTaskComplete(ctx, processed.result); err != nil {
+		if err := a.notifyTaskComplete(ctx, processed.claimedTask, processed.result); err != nil {
+			if isTaskLeaseLostError(err) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -473,12 +525,10 @@ func (a *Agent) handleTaskResult(ctx context.Context, processed taskProcessResul
 	return nil
 }
 
-func (a *Agent) notifyForgeAboutInternalError(ctx context.Context, cause error) {
+func (a *Agent) notifyForgeAboutInternalError(ctx context.Context, processedTask *forgeapi.ClaimedTask, cause error) error {
 	retryable := !errors.Is(cause, task.ErrTaskValidationFailed)
 
-	if err := a.notifyTaskFail(ctx, "internal_err", "Worker failed to process task", retryable); err != nil {
-		log.Printf("failed to notify forge about task internal error: %v", err)
-	}
+	return a.notifyTaskFail(ctx, processedTask, "internal_err", "Worker failed to process task", retryable)
 }
 
 func toTask(claimed forgeapi.ClaimedTask) task.Task {
@@ -527,12 +577,10 @@ func (a *Agent) setWorkerToken(token string) {
 	a.workerToken = token
 }
 
-func (a *Agent) unsetTaskData() {
-	a.taskID = uuid.Nil
-	a.leaseToken = ""
-	a.leaseExpiresAt = time.Time{}
-}
+func isTaskLeaseLostError(err error) bool {
+	var remoteErr *forgeapi.RemoteError
 
-func (a *Agent) hasTask() bool {
-	return a.taskID != uuid.Nil
+	return errors.As(err, &remoteErr) &&
+		remoteErr.StatusCode == http.StatusConflict &&
+		remoteErr.Code == "lease_lost"
 }
