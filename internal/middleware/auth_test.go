@@ -24,6 +24,14 @@ func (r *ClientRepositoryStub) GetClientByTokenHash(ctx context.Context, hash st
 	return r.client, r.err
 }
 
+func (r *ClientRepositoryStub) CreateClient(_ context.Context, client auth.Client) (auth.Client, error) {
+	return r.client, r.err
+}
+
+func (r *ClientRepositoryStub) RotateClientToken(_ context.Context, id uuid.UUID, hash string) (auth.Client, error) {
+	return r.client, r.err
+}
+
 func TestAuth(t *testing.T) {
 	tests := []struct {
 		name         string

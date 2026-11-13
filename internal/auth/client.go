@@ -11,4 +11,7 @@ type Client struct {
 	Name      string
 	TokenHash string
 	CreatedAt time.Time
+
+	PreviousTokenHash      *string
+	PreviousTokenExpiresAt *time.Time
 }

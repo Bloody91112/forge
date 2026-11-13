@@ -13,12 +13,23 @@ import (
 var ErrInvalidAuthToken = errors.New("invalid or missing authorization header")
 
 const bootstrapTokenBytes = 32
+const clientTokenBytes = 32
 
 func GenerateBootstrapToken() (string, error) {
 	token := make([]byte, bootstrapTokenBytes)
 
 	if _, err := rand.Read(token); err != nil {
 		return "", fmt.Errorf("generate bootstrap token: %w", err)
+	}
+
+	return hex.EncodeToString(token), nil
+}
+
+func GenerateClientToken() (string, error) {
+	token := make([]byte, clientTokenBytes)
+
+	if _, err := rand.Read(token); err != nil {
+		return "", fmt.Errorf("generate client token: %w", err)
 	}
 
 	return hex.EncodeToString(token), nil

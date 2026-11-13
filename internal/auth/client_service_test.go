@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -16,6 +17,16 @@ type clientRepositoryStub struct {
 	err    error
 	hash   string
 	calls  int
+
+	createdClient Client
+	createErr     error
+	createCalls   int
+
+	rotatedClient Client
+	rotateErr     error
+	rotatedID     uuid.UUID
+	rotatedHash   string
+	rotateCalls   int
 }
 
 func (r *clientRepositoryStub) GetClientByTokenHash(
@@ -26,6 +37,29 @@ func (r *clientRepositoryStub) GetClientByTokenHash(
 	r.hash = hash
 
 	return r.client, r.err
+}
+
+func (r *clientRepositoryStub) CreateClient(_ context.Context, client Client) (Client, error) {
+	r.createCalls++
+	r.createdClient = client
+
+	if r.createErr != nil {
+		return Client{}, r.createErr
+	}
+
+	return client, nil
+}
+
+func (r *clientRepositoryStub) RotateClientToken(_ context.Context, id uuid.UUID, hash string) (Client, error) {
+	r.rotateCalls++
+	r.rotatedID = id
+	r.rotatedHash = hash
+
+	if r.rotateErr != nil {
+		return Client{}, r.rotateErr
+	}
+
+	return r.rotatedClient, nil
 }
 
 func TestClientService_VerifyClientByToken(t *testing.T) {
@@ -125,5 +159,124 @@ func TestClientService_VerifyClientByToken(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClientService_CreateClient(t *testing.T) {
+	repo := &clientRepositoryStub{}
+	service := NewClientService(repo)
+
+	client, clientToken, err := service.CreateClient(t.Context(), "test-client")
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	if client.ID == uuid.Nil {
+		t.Error("client ID is empty")
+	}
+
+	if client.Name != "test-client" {
+		t.Errorf("client name = %q, want %q", client.Name, "test-client")
+	}
+
+	if len(clientToken) != 64 {
+		t.Errorf("client token length = %d, want 64", len(clientToken))
+	}
+
+	if repo.createCalls != 1 {
+		t.Fatalf("CreateClient repository calls = %d, want 1", repo.createCalls)
+	}
+
+	if repo.createdClient.TokenHash != token.HashToken(clientToken) {
+		t.Error("repository did not receive the client token hash")
+	}
+
+	if repo.createdClient.TokenHash == clientToken {
+		t.Error("repository received the plaintext token")
+	}
+
+	if client.TokenHash != repo.createdClient.TokenHash {
+		t.Error("returned client token hash differs from stored client hash")
+	}
+}
+
+func TestClientService_CreateClientDoesNotReturnTokenOnRepositoryError(t *testing.T) {
+	repositoryErr := errors.New("database unavailable")
+	repo := &clientRepositoryStub{createErr: repositoryErr}
+	service := NewClientService(repo)
+
+	_, clientToken, err := service.CreateClient(t.Context(), "test-client")
+
+	if !errors.Is(err, repositoryErr) {
+		t.Fatalf("CreateClient() error = %v, want %v", err, repositoryErr)
+	}
+
+	if clientToken != "" {
+		t.Error("plaintext token was returned after repository failure")
+	}
+}
+
+func TestClientService_RotateClientToken(t *testing.T) {
+	clientID := uuid.New()
+	previousHash := "previous-token-hash"
+	expiresAt := time.Now()
+
+	repo := &clientRepositoryStub{
+		rotatedClient: Client{
+			ID:                     clientID,
+			PreviousTokenHash:      &previousHash,
+			PreviousTokenExpiresAt: &expiresAt,
+		},
+	}
+	service := NewClientService(repo)
+
+	client, clientToken, err := service.RotateClientToken(t.Context(), clientID)
+	if err != nil {
+		t.Fatalf("RotateClientToken() error = %v", err)
+	}
+
+	if repo.rotateCalls != 1 {
+		t.Fatalf("RotateClientToken repository calls = %d, want 1", repo.rotateCalls)
+	}
+
+	if repo.rotatedID != clientID {
+		t.Errorf("rotated client ID = %s, want %s", repo.rotatedID, clientID)
+	}
+
+	if len(clientToken) != 64 {
+		t.Errorf("client token length = %d, want 64", len(clientToken))
+	}
+
+	if repo.rotatedHash != token.HashToken(clientToken) {
+		t.Error("repository did not receive the new client token hash")
+	}
+
+	if client.ID != clientID {
+		t.Errorf("client ID = %s, want %s", client.ID, clientID)
+	}
+
+	if client.PreviousTokenHash == nil || *client.PreviousTokenHash != previousHash {
+		t.Error("previous token hash was not returned")
+	}
+
+	if client.PreviousTokenExpiresAt == nil {
+		t.Error("previous token expiration was not returned")
+	}
+}
+
+func TestClientService_RotateClientTokenDoesNotReturnTokenOnRepositoryError(t *testing.T) {
+	clientID := uuid.New()
+	repositoryErr := errors.New("database unavailable")
+	repo := &clientRepositoryStub{rotateErr: repositoryErr}
+	service := NewClientService(repo)
+
+	_, clientToken, err := service.RotateClientToken(t.Context(), clientID)
+
+	if !errors.Is(err, repositoryErr) {
+		t.Fatalf("RotateClientToken() error = %v, want %v", err, repositoryErr)
+	}
+
+	if clientToken != "" {
+		t.Error("plaintext token was returned after repository failure")
 	}
 }

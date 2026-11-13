@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 )
 
@@ -45,6 +46,8 @@ func run() error {
 		return nil
 	case "bootstrap":
 		return runBootstrapCommand(args[1:])
+	case "client":
+		return runClientCommand(args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -186,11 +189,12 @@ func runTaskRecoveryLoop(ctx context.Context, service *task.Service) {
 }
 
 func printUsage() {
-	fmt.Println(`Usage:
-  forge                          Start the HTTP server
+	fmt.Println(`Usage:\n  forge                          Start the HTTP server
   forge help                     Show this help
   forge bootstrap init           Initialize the bootstrap token
-  forge bootstrap rotate         Rotate the bootstrap token`)
+  forge bootstrap rotate         Rotate the bootstrap token
+  forge client create "<name>"   Create a client
+  forge client rotate <client-id> Rotate a client token`)
 }
 
 func runBootstrapCommand(args []string) error {
@@ -234,5 +238,71 @@ func runBootstrapCommand(args []string) error {
 	}
 
 	log.Println("Bootstrap token: " + result.Token)
+	return nil
+}
+
+func runClientCommand(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: forge client create <name> | forge client rotate <client-id>")
+	}
+
+	command := args[0]
+	value := args[1]
+
+	var clientID uuid.UUID
+
+	switch command {
+	case "create":
+	case "rotate":
+		id, err := uuid.Parse(value)
+		if err != nil {
+			return fmt.Errorf("invalid client ID: %w", err)
+		}
+		clientID = id
+	default:
+		return fmt.Errorf("unknown client command: %s", command)
+	}
+
+	_ = godotenv.Load()
+
+	conf, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	dbPool, err := database.Open(ctx, conf)
+	if err != nil {
+		return err
+	}
+	defer dbPool.Close()
+
+	clientRepository := postgres.NewClientRepository(dbPool)
+	clientService := auth.NewClientService(clientRepository)
+
+	switch command {
+	case "create":
+		client, clientToken, err := clientService.CreateClient(ctx, value)
+		if err != nil {
+			return fmt.Errorf("create client: %w", err)
+		}
+
+		fmt.Printf("Client ID: %s\nName: %s\nClient token: %s\n", client.ID, client.Name, clientToken)
+
+	case "rotate":
+		client, clientToken, err := clientService.RotateClientToken(ctx, clientID)
+		if err != nil {
+			return fmt.Errorf("rotate client token: %w", err)
+		}
+
+		fmt.Printf("Client ID: %s\nName: %s\nClient token: %s\n", client.ID, client.Name, clientToken)
+
+		if client.PreviousTokenExpiresAt != nil {
+			fmt.Printf("Previous token accepted until: %s\n", client.PreviousTokenExpiresAt.UTC().Format(time.RFC3339))
+		}
+	}
+
 	return nil
 }
