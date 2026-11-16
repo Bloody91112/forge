@@ -671,6 +671,58 @@ func (r *TaskRepository) GetAttempts(ctx context.Context, taskID, clientID uuid.
 	return attempts, nil
 }
 
+func (r *TaskRepository) DeleteOldTasks(ctx context.Context, cleanupPeriodInDays, rowsLimit int) (int, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin delete old tasks transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	lockQuery := "SELECT id FROM tasks WHERE finished_at + ($1 * INTERVAL '1 day') <= NOW() AND status IN ('succeeded', 'failed') ORDER BY finished_at LIMIT $2 FOR UPDATE SKIP LOCKED"
+
+	rows, err := tx.Query(ctx, lockQuery, cleanupPeriodInDays, rowsLimit)
+	if err != nil {
+		return 0, fmt.Errorf("lock tasks for delete: %w", err)
+	}
+
+	var taskIDS []uuid.UUID
+
+	for rows.Next() {
+		var taskID uuid.UUID
+
+		err := rows.Scan(&taskID)
+		if err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan task: %w", err)
+		}
+
+		taskIDS = append(taskIDS, taskID)
+	}
+
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate old tasks: %w", err)
+	}
+
+	rows.Close()
+
+	for _, taskID := range taskIDS {
+		if _, err := tx.Exec(ctx, "DELETE FROM task_attempts WHERE task_id = $1", taskID); err != nil {
+			return 0, fmt.Errorf("delete task attempts: %w", err)
+		}
+
+		if _, err := tx.Exec(ctx, "DELETE FROM tasks WHERE id = $1", taskID); err != nil {
+			return 0, fmt.Errorf("delete task: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("failed to commit task deletion: %w", err)
+	}
+
+	return len(taskIDS), nil
+}
+
 func fullJitterBackoff(attempt int) time.Duration {
 	seconds := min(
 		time.Second*time.Duration(1<<(attempt-1)),

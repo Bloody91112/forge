@@ -36,6 +36,8 @@ const (
 	MaxTaskTimeout         = 3600
 	MaxPayloadSize         = 1 << 20 // 1 MiB
 	LeaseSeconds           = 30
+	cleanupPeriodInDays    = 30
+	cleanupTasksLimit      = 100
 )
 
 type CreateResult struct {
@@ -57,6 +59,7 @@ type Repository interface {
 	MarkTaskAsFailed(ctx context.Context, taskID, workerID, leaseToken uuid.UUID, errCode, errMessage string, retryable bool) error
 	RecoverStackTasks(ctx context.Context) (int, error)
 	GetAttempts(ctx context.Context, taskID, clientID uuid.UUID) ([]TaskAttempt, error)
+	DeleteOldTasks(ctx context.Context, cleanupPeriodInDays, rowsLimit int) (int, error)
 }
 
 type WorkerRepository interface {
@@ -328,6 +331,15 @@ func (s *Service) GetAttempts(ctx context.Context, taskID uuid.UUID) ([]TaskAtte
 	return attempts, nil
 }
 
+func (s *Service) DeleteOldTasks(ctx context.Context) (int, error) {
+	count, err := s.repo.DeleteOldTasks(ctx, cleanupPeriodInDays, cleanupTasksLimit)
+	if err != nil {
+		return 0, fmt.Errorf("delete old tasks: %w", err)
+	}
+
+	return count, nil
+}
+
 func calculateRequestHash(payload json.RawMessage, taskType string, timeoutSeconds int64, maxAttempts int64) (string, error) {
 	var decoded any
 
@@ -383,10 +395,8 @@ func checkWorkerID(ctx context.Context, id uuid.UUID) error {
 }
 
 func checkNullUuids(args ...uuid.UUID) error {
-	for _, uuidValue := range args {
-		if uuidValue == uuid.Nil {
-			return fmt.Errorf("nil uuid provided: %w", ErrInvalidInput)
-		}
+	if slices.Contains(args, uuid.Nil) {
+		return fmt.Errorf("nil uuid provided: %w", ErrInvalidInput)
 	}
 
 	return nil

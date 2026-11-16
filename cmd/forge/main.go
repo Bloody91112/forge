@@ -126,10 +126,11 @@ func runServer() error {
 		serverErr <- server.ListenAndServe()
 	}()
 
-	recoveryDone := make(chan struct{})
+	taskCyclesDone := make(chan struct{})
 	go func() {
-		defer close(recoveryDone)
+		defer close(taskCyclesDone)
 		runTaskRecoveryLoop(mainCtx, taskService)
+		runDeleteOldTasksLoop(mainCtx, taskService)
 	}()
 
 	var runErr error
@@ -155,7 +156,7 @@ func runServer() error {
 		}
 	}
 
-	<-recoveryDone
+	<-taskCyclesDone
 
 	return runErr
 }
@@ -188,12 +189,40 @@ func runTaskRecoveryLoop(ctx context.Context, service *task.Service) {
 	}
 }
 
+func runDeleteOldTasksLoop(ctx context.Context, service *task.Service) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("delete old tasks loop stopped")
+			return
+		case <-ticker.C:
+			deleted, err := service.DeleteOldTasks(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+
+				log.Printf("delete old tasks failed: %w", err)
+				continue
+			}
+
+			if deleted > 0 {
+				log.Printf("delete old tasks completed: deleted %d tasks", deleted)
+			}
+		}
+	}
+}
+
 func printUsage() {
-	fmt.Println(`Usage:\n  forge                          Start the HTTP server
-  forge help                     Show this help
-  forge bootstrap init           Initialize the bootstrap token
-  forge bootstrap rotate         Rotate the bootstrap token
-  forge client create "<name>"   Create a client
+	fmt.Println(`Usage:
+  forge                           Start the HTTP server
+  forge help                      Show this help
+  forge bootstrap init            Initialize the bootstrap token
+  forge bootstrap rotate          Rotate the bootstrap token
+  forge client create "<name>"    Create a client
   forge client rotate <client-id> Rotate a client token`)
 }
 
