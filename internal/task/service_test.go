@@ -59,6 +59,12 @@ type taskRepositoryStub struct {
 	getAttemptsCalled   bool
 	gotAttemptsTaskID   uuid.UUID
 	gotAttemptsClientID uuid.UUID
+
+	deleteOldTasksCount    int
+	deleteOldTasksErr      error
+	deleteOldTasksCalled   bool
+	gotCleanupPeriodInDays int
+	gotCleanupRowsLimit    int
 }
 
 func (r *taskRepositoryStub) CreateOrGetByIdempotencyKey(
@@ -198,6 +204,21 @@ func (r *taskRepositoryStub) GetAttempts(
 	}
 
 	return r.getAttempts, nil
+}
+
+func (r *taskRepositoryStub) DeleteOldTasks(
+	_ context.Context,
+	cleanupPeriodInDays, rowsLimit int,
+) (int, error) {
+	r.deleteOldTasksCalled = true
+	r.gotCleanupPeriodInDays = cleanupPeriodInDays
+	r.gotCleanupRowsLimit = rowsLimit
+
+	if r.deleteOldTasksErr != nil {
+		return 0, r.deleteOldTasksErr
+	}
+
+	return r.deleteOldTasksCount, nil
 }
 
 type workerRepositoryStub struct {
@@ -1301,5 +1322,54 @@ func TestService_GetAttemptsPropagatesRepositoryError(t *testing.T) {
 
 	if !errors.Is(err, repositoryErr) {
 		t.Fatalf("error = %v, want wrapped %v", err, repositoryErr)
+	}
+}
+
+func TestService_DeleteOldTasks(t *testing.T) {
+	repo := &taskRepositoryStub{
+		deleteOldTasksCount: 7,
+	}
+
+	service := NewService(repo, &workerRepositoryStub{})
+
+	got, err := service.DeleteOldTasks(t.Context())
+	if err != nil {
+		t.Fatalf("DeleteOldTasks() error = %v", err)
+	}
+
+	if got != 7 {
+		t.Errorf("deleted count = %d, want 7", got)
+	}
+
+	if !repo.deleteOldTasksCalled {
+		t.Fatal("expected repository DeleteOldTasks to be called")
+	}
+
+	if repo.gotCleanupPeriodInDays != 30 {
+		t.Errorf("cleanup period = %d, want 30", repo.gotCleanupPeriodInDays)
+	}
+
+	if repo.gotCleanupRowsLimit != 100 {
+		t.Errorf("rows limit = %d, want 100", repo.gotCleanupRowsLimit)
+	}
+}
+
+func TestService_DeleteOldTasks_RepositoryError(t *testing.T) {
+	repositoryErr := errors.New("database unavailable")
+
+	repo := &taskRepositoryStub{
+		deleteOldTasksErr: repositoryErr,
+	}
+
+	service := NewService(repo, &workerRepositoryStub{})
+
+	got, err := service.DeleteOldTasks(t.Context())
+
+	if !errors.Is(err, repositoryErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, repositoryErr)
+	}
+
+	if got != 0 {
+		t.Errorf("deleted count = %d, want 0", got)
 	}
 }

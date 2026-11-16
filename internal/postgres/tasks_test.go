@@ -1531,3 +1531,251 @@ func TestTaskRepository_GetAttemptsHidesTaskFromAnotherClient(t *testing.T) {
 		t.Errorf("GetAttempts() for missing task error = %v, want %v", err, task.ErrTaskNotFound)
 	}
 }
+
+func createCleanupTestWorker(t *testing.T, db *pgxpool.Pool) uuid.UUID {
+	t.Helper()
+
+	workerID := uuid.New()
+
+	_, err := db.Exec(t.Context(), `
+        INSERT INTO workers (
+            id, token_hash, protocol_version, capabilities, lease_expires_at
+        )
+        VALUES ($1, $2, $3, $4::jsonb, clock_timestamp() + INTERVAL '1 hour')
+    `, workerID, "cleanup-test-token", "1", `["email-send"]`)
+
+	if err != nil {
+		t.Fatalf("insert cleanup worker: %v", err)
+	}
+
+	return workerID
+}
+
+func createFinishedTaskForCleanup(
+	t *testing.T,
+	db *pgxpool.Pool,
+	repo *TaskRepository,
+	clientID, workerID uuid.UUID,
+	status string,
+	daysAgo int,
+) task.Task {
+	t.Helper()
+
+	expected := newTestTask(clientID)
+
+	if _, created, err := repo.CreateOrGetByIdempotencyKey(
+		t.Context(), expected,
+	); err != nil {
+		t.Fatalf("create task: %v", err)
+	} else if !created {
+		t.Fatal("expected task to be created")
+	}
+
+	_, err := db.Exec(t.Context(), `
+        UPDATE tasks
+        SET status = $2,
+            finished_at = clock_timestamp() - ($3 * INTERVAL '1 day')
+        WHERE id = $1
+    `, expected.ID, status, daysAgo)
+
+	if err != nil {
+		t.Fatalf("finish task: %v", err)
+	}
+
+	outcome := "succeeded"
+	if status == "failed" {
+		outcome = "permanent_error"
+	}
+
+	_, err = db.Exec(t.Context(), `
+        INSERT INTO task_attempts (
+            id, task_id, attempt_number, worker_id,
+            started_at, finished_at, outcome
+        )
+        VALUES (
+            gen_random_uuid(), $1, 1, $2,
+            clock_timestamp() - ($3 * INTERVAL '1 day'),
+            clock_timestamp() - ($3 * INTERVAL '1 day'),
+            $4
+        )
+    `, expected.ID, workerID, daysAgo, outcome)
+
+	if err != nil {
+		t.Fatalf("insert task attempt: %v", err)
+	}
+
+	return expected
+}
+
+func TestTaskRepository_DeleteOldTasks(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	clientID := createTestClient(t, db)
+	workerID := createCleanupTestWorker(t, db)
+
+	oldSucceeded := createFinishedTaskForCleanup(
+		t, db, repo, clientID, workerID, "succeeded", 31,
+	)
+	oldFailed := createFinishedTaskForCleanup(
+		t, db, repo, clientID, workerID, "failed", 31,
+	)
+	recent := createFinishedTaskForCleanup(
+		t, db, repo, clientID, workerID, "succeeded", 29,
+	)
+
+	queued := newTestTask(clientID)
+	if _, _, err := repo.CreateOrGetByIdempotencyKey(t.Context(), queued); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := db.Exec(t.Context(), `
+        UPDATE tasks
+        SET created_at = clock_timestamp() - INTERVAL '31 days'
+        WHERE id = $1
+    `, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	running, _, _ := createRunningTask(t, db, repo)
+
+	_, err = db.Exec(t.Context(), `
+        UPDATE tasks
+        SET created_at = clock_timestamp() - INTERVAL '31 days'
+        WHERE id = $1
+    `, running.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := repo.DeleteOldTasks(t.Context(), 30, 100)
+	if err != nil {
+		t.Fatalf("DeleteOldTasks() error = %v", err)
+	}
+
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+
+	checkCounts := func(id uuid.UUID, wantTasks, wantAttempts int) {
+		t.Helper()
+
+		var tasksCount, attemptsCount int
+
+		err := db.QueryRow(t.Context(),
+			`SELECT COUNT(*) FROM tasks WHERE id = $1`, id,
+		).Scan(&tasksCount)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = db.QueryRow(t.Context(),
+			`SELECT COUNT(*) FROM task_attempts WHERE task_id = $1`, id,
+		).Scan(&attemptsCount)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if tasksCount != wantTasks || attemptsCount != wantAttempts {
+			t.Errorf(
+				"task %s: tasks = %d, attempts = %d; want %d, %d",
+				id, tasksCount, attemptsCount, wantTasks, wantAttempts,
+			)
+		}
+	}
+
+	checkCounts(oldSucceeded.ID, 0, 0)
+	checkCounts(oldFailed.ID, 0, 0)
+	checkCounts(recent.ID, 1, 1)
+	checkCounts(queued.ID, 1, 0)
+	checkCounts(running.ID, 1, 1)
+
+	// После удаления задачи Idempotency-Key снова доступен.
+	replacement := newTestTask(clientID)
+	replacement.IdempotencyKey = oldSucceeded.IdempotencyKey
+	replacement.RequestHash = oldSucceeded.RequestHash
+
+	_, created, err := repo.CreateOrGetByIdempotencyKey(t.Context(), replacement)
+	if err != nil {
+		t.Fatalf("create task with reused idempotency key: %v", err)
+	}
+	if !created {
+		t.Error("expected task with reused idempotency key to be created")
+	}
+}
+
+func TestTaskRepository_DeleteOldTasks_SkipsLockedTasks(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewTaskRepository(db)
+
+	clientID := createTestClient(t, db)
+	workerID := createCleanupTestWorker(t, db)
+
+	lockedTask := createFinishedTaskForCleanup(
+		t, db, repo, clientID, workerID, "succeeded", 40,
+	)
+	unlockedTask := createFinishedTaskForCleanup(
+		t, db, repo, clientID, workerID, "succeeded", 35,
+	)
+
+	tx, err := db.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+
+	var lockedID uuid.UUID
+
+	err = tx.QueryRow(t.Context(), `
+        SELECT id FROM tasks WHERE id = $1 FOR UPDATE
+    `, lockedTask.ID).Scan(&lockedID)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := repo.DeleteOldTasks(t.Context(), 30, 1)
+	if err != nil {
+		t.Fatalf("DeleteOldTasks() error = %v", err)
+	}
+
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+
+	var lockedExists, unlockedExists bool
+
+	err = db.QueryRow(t.Context(), `
+        SELECT EXISTS(SELECT 1 FROM tasks WHERE id = $1)
+    `, lockedTask.ID).Scan(&lockedExists)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = db.QueryRow(t.Context(), `
+        SELECT EXISTS(SELECT 1 FROM tasks WHERE id = $1)
+    `, unlockedTask.ID).Scan(&unlockedExists)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !lockedExists {
+		t.Error("locked task must not be deleted")
+	}
+	if unlockedExists {
+		t.Error("unlocked task should have been deleted")
+	}
+
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err = repo.DeleteOldTasks(t.Context(), 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted after unlock = %d, want 1", deleted)
+	}
+}

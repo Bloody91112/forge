@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -126,10 +127,16 @@ func runServer() error {
 		serverErr <- server.ListenAndServe()
 	}()
 
-	taskCyclesDone := make(chan struct{})
+	var taskCycles sync.WaitGroup
+	taskCycles.Add(2)
+
 	go func() {
-		defer close(taskCyclesDone)
+		defer taskCycles.Done()
 		runTaskRecoveryLoop(mainCtx, taskService)
+	}()
+
+	go func() {
+		defer taskCycles.Done()
 		runDeleteOldTasksLoop(mainCtx, taskService)
 	}()
 
@@ -156,7 +163,7 @@ func runServer() error {
 		}
 	}
 
-	<-taskCyclesDone
+	taskCycles.Wait()
 
 	return runErr
 }
@@ -205,7 +212,7 @@ func runDeleteOldTasksLoop(ctx context.Context, service *task.Service) {
 					return
 				}
 
-				log.Printf("delete old tasks failed: %w", err)
+				log.Printf("delete old tasks failed: %v", err)
 				continue
 			}
 
