@@ -62,8 +62,8 @@ func runServer() error {
 		return err
 	}
 
-	mainCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
+	mainCtx, mainCtxStop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer mainCtxStop()
 
 	dbPool, err := database.Open(mainCtx, conf)
 	if err != nil {
@@ -149,6 +149,8 @@ func runServer() error {
 			runErr = fmt.Errorf("http server stopped: %w", err)
 		}
 	}
+
+	mainCtxStop()
 
 	readiness.SetNotReady()
 
