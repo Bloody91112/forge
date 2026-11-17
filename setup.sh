@@ -4,7 +4,6 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$ROOT_DIR/.env"
-
 TEMP_FILE=""
 
 cd "$ROOT_DIR"
@@ -60,7 +59,7 @@ create_env_file() {
     cp "$ROOT_DIR/.env.example" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
 
-    log "Created .env"
+    log "Created .env from .env.example"
 }
 
 get_env_value() {
@@ -119,6 +118,9 @@ validate_env() {
 
     local name
     local value
+    local db_database
+    local db_test_database
+    local db_port
 
     for name in "${required_vars[@]}"; do
         value="$(get_env_value "$name")"
@@ -126,6 +128,22 @@ validate_env() {
         [[ -n "$value" ]] ||
             die "Environment variable $name is missing or empty"
     done
+
+    db_database="$(get_env_value DB_DATABASE)"
+    db_test_database="$(get_env_value DB_TEST_DATABASE)"
+
+    [[ "$db_database" != "$db_test_database" ]] ||
+        die "DB_DATABASE and DB_TEST_DATABASE must be different"
+
+    db_port="$(get_env_value DB_PORT)"
+
+    [[ -n "$db_port" ]] || db_port=5432
+
+    [[ "$db_port" =~ ^[0-9]+$ ]] ||
+        die "DB_PORT must be a number"
+
+    (( db_port >= 1 && db_port <= 65535 )) ||
+        die "DB_PORT must be between 1 and 65535"
 }
 
 # --------------------------------------------------
@@ -180,21 +198,22 @@ initialize_bootstrap() {
         die "Bootstrap initialization failed"
     fi
 
-    # New token was generated.
+    # A new token was generated.
     if [[ "$token" =~ ^[[:xdigit:]]{64}$ ]]; then
         set_env_value WORKER_BOOTSTRAP_TOKEN "$token"
         return
     fi
 
-    # Token already exists. Keep the current one when available.
+    # The token already exists in PostgreSQL.
+    # Keep the configured token if it is present.
     token="$(get_env_value WORKER_BOOTSTRAP_TOKEN)"
 
     if [[ "$token" =~ ^[[:xdigit:]]{64}$ ]]; then
         return
     fi
 
-    # Token exists in DB but is missing from .env.
-    log "Recovering missing bootstrap token"
+    # The token hash exists, but its plaintext value is unavailable.
+    log "Bootstrap token is missing from .env; rotating it"
 
     if ! token="$(run_bootstrap rotate)"; then
         die "Bootstrap token rotation failed"
@@ -219,7 +238,7 @@ start_forge() {
 wait_for_forge() {
     local attempts=30
 
-    log "Waiting for Forge API"
+    log "Waiting for Forge API readiness"
 
     for ((i = 1; i <= attempts; i++)); do
         if curl \
@@ -245,6 +264,34 @@ start_worker() {
     docker compose up -d worker
 }
 
+wait_for_worker() {
+    local attempts=30
+    local active_workers=""
+
+    log "Waiting for Worker registration"
+
+    for ((i = 1; i <= attempts; i++)); do
+        if active_workers="$(
+            docker compose exec -T postgres sh -c \
+                'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT COUNT(*) FROM workers WHERE lease_expires_at > clock_timestamp()"' \
+                2>/dev/null
+        )"; then
+
+            active_workers="${active_workers//[[:space:]]/}"
+
+            if [[ "$active_workers" =~ ^[1-9][0-9]*$ ]]; then
+                return 0
+            fi
+        fi
+
+        sleep 1
+    done
+
+    docker compose logs worker
+
+    die "No active Worker registered with Forge"
+}
+
 # --------------------------------------------------
 # Main
 # --------------------------------------------------
@@ -253,6 +300,8 @@ main() {
     check_requirements
 
     create_env_file
+    chmod 600 "$ENV_FILE"
+
     validate_env
 
     docker compose config --quiet ||
@@ -261,12 +310,13 @@ main() {
     build_images
     start_postgres
     run_migrations
-
     initialize_bootstrap
 
     start_forge
     wait_for_forge
+
     start_worker
+    wait_for_worker
 
     log "Forge environment is ready"
 

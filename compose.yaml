@@ -1,3 +1,4 @@
+
 services:
   postgres:
     image: postgres:18
@@ -8,7 +9,7 @@ services:
       POSTGRES_DB: ${DB_DATABASE}
       POSTGRES_TEST_DB: ${DB_TEST_DATABASE}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -27,13 +28,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    environment:
+      PGUSER: ${DB_USERNAME}
+      PGPASSWORD: ${DB_PASSWORD}
+      PGDATABASE: ${DB_DATABASE}
     volumes:
       - ./migrations:/migrations:ro
     command:
       - "-path"
       - "/migrations"
       - "-database"
-      - "postgres://${DB_USERNAME}:${DB_PASSWORD}@postgres:5432/${DB_DATABASE}?sslmode=disable"
+      - "postgres://postgres:5432?sslmode=disable"
       - "up"
 
   migrate-test:
@@ -43,13 +48,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    environment:
+      PGUSER: ${DB_USERNAME}
+      PGPASSWORD: ${DB_PASSWORD}
+      PGDATABASE: ${DB_TEST_DATABASE}
     volumes:
       - ./migrations:/migrations:ro
     command:
       - "-path"
       - "/migrations"
       - "-database"
-      - "postgres://${DB_USERNAME}:${DB_PASSWORD}@postgres:5432/${DB_TEST_DATABASE}?sslmode=disable"
+      - "postgres://postgres:5432?sslmode=disable"
       - "up"
 
   forge:
