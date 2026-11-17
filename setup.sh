@@ -198,21 +198,17 @@ initialize_bootstrap() {
         die "Bootstrap initialization failed"
     fi
 
-    # A new token was generated.
     if [[ "$token" =~ ^[[:xdigit:]]{64}$ ]]; then
         set_env_value WORKER_BOOTSTRAP_TOKEN "$token"
         return
     fi
 
-    # The token already exists in PostgreSQL.
-    # Keep the configured token if it is present.
     token="$(get_env_value WORKER_BOOTSTRAP_TOKEN)"
 
     if [[ "$token" =~ ^[[:xdigit:]]{64}$ ]]; then
         return
     fi
 
-    # The token hash exists, but its plaintext value is unavailable.
     log "Bootstrap token is missing from .env; rotating it"
 
     if ! token="$(run_bootstrap rotate)"; then
@@ -264,34 +260,6 @@ start_worker() {
     docker compose up -d worker
 }
 
-wait_for_worker() {
-    local attempts=30
-    local active_workers=""
-
-    log "Waiting for Worker registration"
-
-    for ((i = 1; i <= attempts; i++)); do
-        if active_workers="$(
-            docker compose exec -T postgres sh -c \
-                'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT COUNT(*) FROM workers WHERE lease_expires_at > clock_timestamp()"' \
-                2>/dev/null
-        )"; then
-
-            active_workers="${active_workers//[[:space:]]/}"
-
-            if [[ "$active_workers" =~ ^[1-9][0-9]*$ ]]; then
-                return 0
-            fi
-        fi
-
-        sleep 1
-    done
-
-    docker compose logs worker
-
-    die "No active Worker registered with Forge"
-}
-
 # --------------------------------------------------
 # Main
 # --------------------------------------------------
@@ -316,9 +284,8 @@ main() {
     wait_for_forge
 
     start_worker
-    wait_for_worker
 
-    log "Forge environment is ready"
+    log "Forge API is ready; Worker container has been started"
 
     printf 'API: http://localhost:8080\n'
 }
