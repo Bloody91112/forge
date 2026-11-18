@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
@@ -67,6 +68,8 @@ get_env_value() {
     local line
 
     while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+
         if [[ "$line" == "$key="* ]]; then
             printf '%s' "${line#*=}"
             return 0
@@ -86,6 +89,8 @@ set_env_value() {
 
     {
         while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%$'\r'}"
+
             if [[ "$line" == "$key="* ]]; then
                 if (( found == 0 )); then
                     printf '%s=%s\n' "$key" "$value"
