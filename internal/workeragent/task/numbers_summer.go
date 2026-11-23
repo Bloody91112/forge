@@ -9,7 +9,7 @@ import (
 
 type NumbersSummer struct{}
 
-type ExpectedPayload struct {
+type NumbersSummerPayload struct {
 	Number1 *int `json:"number_1"`
 	Number2 *int `json:"number_2"`
 }
@@ -19,7 +19,7 @@ type numbersSumResult struct {
 }
 
 func (ns *NumbersSummer) HandleTask(ctx context.Context, task Task) (ServiceResult, error) {
-	var payload ExpectedPayload
+	var payload NumbersSummerPayload
 
 	if err := json.Unmarshal(task.Payload, &payload); err != nil {
 		return invalidPayloadResult(fmt.Sprintf("invalid payload: %v", err)), nil
