@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sync"
@@ -23,25 +24,29 @@ type HTTPLoadTesterResult struct {
 	Completed       int     `json:"completed"`
 	TransportErrors int     `json:"transport_errors"`
 	Dropped         int     `json:"dropped"`
+	LatencyTotalMs  float64 `json:"latency_total_ms"`
 	AvgLatencyMs    float64 `json:"avg_latency_ms"`
 	DurationSeconds int     `json:"duration_seconds"`
 }
 
 type SecondResult struct {
-	total     int
-	sent      int
-	completed int
-	errors    int
-	dropped   int
-	latencyMs int64
+	total        int
+	sent         int
+	completed    int
+	errors       int
+	dropped      int
+	latencyTotal time.Duration
+	latencyMin   time.Duration
+	latencyMax   time.Duration
+	statusCodes  map[int]int
 }
 
 type RequestResult struct {
-	createdAt   *time.Time
-	completedAt *time.Time
-	sent        bool
-	code        *int
-	err         error
+	sent       bool
+	startedAt  time.Time
+	finishedAt time.Time
+	statusCode int
+	err        error
 }
 
 type HTTPLoadTester struct {
@@ -67,30 +72,64 @@ func (t *HTTPLoadTester) HandleTask(ctx context.Context, task Task) (ServiceResu
 		return invalidPayloadResult(fmt.Sprintf("duration_seconds should be positive number, got: %d", payload.DurationSeconds)), nil
 	}
 
+	t.client = &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
 	deadline := time.Now().Add(time.Duration(payload.DurationSeconds) * time.Second)
 	deadlineCtx, callDeadline := context.WithDeadline(ctx, deadline)
 	defer callDeadline()
 
+	resultsCh := make(chan SecondResult)
+	collectedTotalResult := make(chan HTTPLoadTesterResult, 1)
+
+	go func() {
+		collectedTotalResult <- t.collectResults(payload.TargetRPS, payload.DurationSeconds, resultsCh)
+	}()
+
+	var loadsWG sync.WaitGroup
+	var err error
+
+	loadsWG.Go(func() {
+		t.makeOneSecondLoad(ctx, resultsCh, payload.TargetRPS, payload.URL)
+	})
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	results := make(chan SecondResult)
-	defer close(results)
-
+loop:
 	for {
 		select {
 		case <-ctx.Done():
-			return ServiceResult{}, ctx.Err()
+			err = ctx.Err()
+			break loop
 		case <-deadlineCtx.Done():
-			close(results)
-
-			return ServiceResult{}, nil
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
+			break loop
 		case <-ticker.C:
-			// makeOneSecondLoad
-		}
+			if ctx.Err() != nil {
+				err = ctx.Err()
+				break loop
+			}
 
+			if deadlineCtx.Err() != nil {
+				break loop
+			}
+
+			loadsWG.Go(func() {
+				t.makeOneSecondLoad(ctx, resultsCh, payload.TargetRPS, payload.URL)
+			})
+		}
 	}
 
+	loadsWG.Wait()
+	close(resultsCh)
+
+	totalResult := <-collectedTotalResult
+
+	return ServiceResult{Result: totalResult}, err
 }
 
 func (t *HTTPLoadTester) makeOneSecondLoad(ctx context.Context, resultsCh chan<- SecondResult, targetRPS int, URL string) {
@@ -103,58 +142,48 @@ func (t *HTTPLoadTester) makeOneSecondLoad(ctx context.Context, resultsCh chan<-
 
 	for range targetRPS {
 		wg.Go(func() {
-			createdAt := time.Now()
-
-			if oneSecCtx.Err() != nil {
-				requestsCh <- RequestResult{
-					createdAt: &createdAt,
-					err:       oneSecCtx.Err(),
-					sent:      false,
-				}
+			if err := oneSecCtx.Err(); err != nil {
+				requestsCh <- RequestResult{err: err}
 				return
 			}
 
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, URL, nil)
 
 			if err != nil {
-				requestsCh <- RequestResult{
-					createdAt: &createdAt,
-					err:       err,
-					sent:      false,
-				}
+				requestsCh <- RequestResult{err: err}
 				return
 			}
 
-			resp, err := t.client.Do(req)
+			startedAt := time.Now()
+			resp, requestErr := t.client.Do(req)
 
-			var completedAt *time.Time
-			var code *int
+			result := RequestResult{
+				sent:      true,
+				startedAt: startedAt,
+				err:       requestErr,
+			}
 
 			if resp != nil {
-				defer resp.Body.Close()
+				result.statusCode = resp.StatusCode
 
-				now := time.Now()
-				completedAt = &now
+				_, bodyErr := io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
 
-				statusCode := resp.StatusCode
-				code = &statusCode
+				if result.err == nil {
+					result.err = bodyErr
+				}
 			}
 
-			requestsCh <- RequestResult{
-				createdAt:   &createdAt,
-				completedAt: completedAt,
-				code:        code,
-				err:         err,
-				sent:        true,
-			}
+			result.finishedAt = time.Now()
+
+			requestsCh <- result
 		})
 	}
 
 	wg.Wait()
-
 	close(requestsCh)
 
-	var sr SecondResult
+	sr := SecondResult{statusCodes: make(map[int]int)}
 
 	for rr := range requestsCh {
 		sr.total++
@@ -171,13 +200,48 @@ func (t *HTTPLoadTester) makeOneSecondLoad(ctx context.Context, resultsCh chan<-
 			continue
 		}
 
-		if rr.completedAt != nil {
-			sr.completed++
-			sr.latencyMs += rr.completedAt.Sub(*rr.createdAt).Milliseconds()
+		sr.completed++
+		sr.statusCodes[rr.statusCode]++
+
+		latency := rr.finishedAt.Sub(rr.startedAt)
+		sr.latencyTotal += latency
+
+		if sr.completed == 1 || latency < sr.latencyMin {
+			sr.latencyMin = latency
+		}
+
+		if latency > sr.latencyMax {
+			sr.latencyMax = latency
 		}
 	}
 
 	resultsCh <- sr
+}
+
+func (t *HTTPLoadTester) collectResults(targetRPS int, durationSeconds int, resultCh <-chan SecondResult) HTTPLoadTesterResult {
+	total := HTTPLoadTesterResult{
+		TargetRPS:       targetRPS,
+		DurationSeconds: durationSeconds,
+	}
+
+	for sr := range resultCh {
+		total.TotalSent += sr.sent
+		total.Completed += sr.completed
+		total.TransportErrors += sr.errors
+		total.Dropped += sr.dropped
+		total.LatencyTotalMs += float64(sr.latencyTotal) / float64(time.Millisecond)
+
+	}
+
+	if durationSeconds > 0 {
+		total.ActualRPS = float64(total.TotalSent) / float64(durationSeconds)
+	}
+
+	if total.Completed > 0 {
+		total.AvgLatencyMs = total.LatencyTotalMs / float64(total.Completed)
+	}
+
+	return total
 }
 
 func isValidHTTPURL(rawURL string) bool {
