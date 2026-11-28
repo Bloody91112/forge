@@ -147,7 +147,7 @@ func (t *HTTPLoadTester) makeOneSecondLoad(ctx context.Context, resultsCh chan<-
 				return
 			}
 
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, URL, nil)
+			req, err := http.NewRequestWithContext(oneSecCtx, http.MethodGet, URL, nil)
 
 			if err != nil {
 				requestsCh <- RequestResult{err: err}
