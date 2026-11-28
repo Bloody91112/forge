@@ -91,7 +91,7 @@ func (t *HTTPLoadTester) HandleTask(ctx context.Context, task Task) (ServiceResu
 	var err error
 
 	loadsWG.Go(func() {
-		t.makeOneSecondLoad(ctx, resultsCh, payload.TargetRPS, payload.URL)
+		t.makeOneSecondLoad(deadlineCtx, resultsCh, payload.TargetRPS, payload.URL)
 	})
 
 	ticker := time.NewTicker(1 * time.Second)
@@ -118,8 +118,12 @@ loop:
 				break loop
 			}
 
+			if !time.Now().Before(deadline) {
+				break loop
+			}
+
 			loadsWG.Go(func() {
-				t.makeOneSecondLoad(ctx, resultsCh, payload.TargetRPS, payload.URL)
+				t.makeOneSecondLoad(deadlineCtx, resultsCh, payload.TargetRPS, payload.URL)
 			})
 		}
 	}

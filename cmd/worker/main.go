@@ -44,8 +44,8 @@ func run() error {
 	}
 
 	taskHandlers := map[string]task.ForgeTaskHandler{
-		"sum-numbers":      &task.NumbersSummer{},
-		"http-load-tester": &task.HTTPLoadTester{},
+		"sum-numbers": &task.NumbersSummer{},
+		"http-test":   &task.HTTPLoadTester{},
 	}
 
 	taskService := task.NewService(taskHandlers)
